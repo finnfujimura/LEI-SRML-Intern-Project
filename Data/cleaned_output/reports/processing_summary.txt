@@ -1,0 +1,27 @@
+Source files scanned: 124
+Total lines seen: 6581732
+Valid rows parsed: 6581721
+Invalid rows (too few columns): 0
+Invalid rows (non-integer year/day/time): 0
+Unique cleaned rows: 5160748
+Duplicate rows removed (based on columns 2+): 1420973
+Years found: 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026
+Yearly row counts:
+  2015: 122376
+  2016: 442781
+  2017: 525600
+  2018: 459590
+  2019: 526470
+  2020: 527956
+  2021: 535063
+  2022: 435621
+  2023: 524388
+  2024: 529648
+  2025: 530855
+  2026: 400
+10-year selection (starting at first year): 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024
+10-year rows written: 4629493
+10-year day groups checked: 3198
+10-year days with missing timestamps: 9
+10-year missing timestamp total: 4766
+10-year out-of-range timestamps: 0

@@ -1,0 +1,8 @@
+10-year file: stw_10_years_cleaned.csv
+Rows read: 4629493
+Unique rows: 4629493
+Duplicates found on recheck: 0
+Day groups checked: 3198
+Days with missing timestamps: 9
+Missing timestamps total: 4766
+Out-of-range timestamps: 0

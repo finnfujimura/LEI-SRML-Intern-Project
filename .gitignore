@@ -1,0 +1,4 @@
+Data/cleaned_output/combined/stw_10_years_cleaned.csv
+__pycache__/
+*.pyc
+.DS_Store
