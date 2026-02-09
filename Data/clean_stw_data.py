@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Clean and consolidate STW monthly files.
+Clean and consolidate monthly files.
 
-Rules implemented from request:
+Rules:
 - The first column is ignored for de-duplication.
 - Year/day/time are read from columns 2/3/4.
 - Duplicate rows are removed.
@@ -55,6 +55,7 @@ class MissingSummary:
 
 
 def parse_int(value: str) -> int | None:
+    "Safely parses a string into an integer, returning None on failure."
     try:
         return int(value.strip())
     except ValueError:
@@ -62,6 +63,7 @@ def parse_int(value: str) -> int | None:
 
 
 def discover_input_files(base_dir: Path) -> list[Path]:
+    "Recursively finds 'STW_' input files in the given directory."
     files: list[Path] = []
     for f in sorted(base_dir.rglob("*")):
         if not f.is_file():
@@ -72,6 +74,7 @@ def discover_input_files(base_dir: Path) -> list[Path]:
 
 
 def init_db(db_path: Path) -> sqlite3.Connection:
+    "Initializes a SQLite database with deduplication tables and indices."
     if db_path.exists():
         db_path.unlink()
     conn = sqlite3.connect(db_path)
@@ -93,6 +96,7 @@ def init_db(db_path: Path) -> sqlite3.Connection:
 
 
 def ingest_files(conn: sqlite3.Connection, files: Iterable[Path], drop_first_col: bool) -> IngestStats:
+    "Reads input files and inserts unique rows into the database."
     stats = IngestStats()
     batch: list[tuple[str, int, int, int]] = []
 
@@ -147,6 +151,7 @@ def ingest_files(conn: sqlite3.Connection, files: Iterable[Path], drop_first_col
 
 
 def is_valid_hhmm(value: int) -> bool:
+    "Validates if an integer represents a valid HHMM time or 2400."
     if value == 2400:
         return True
     if value < 1 or value > 2359:
@@ -157,6 +162,7 @@ def is_valid_hhmm(value: int) -> bool:
 
 
 def hhmm_to_minute_index(value: int) -> int:
+    "Converts HHMM time format to a 0-indexed minute of the day."
     if value == 2400:
         return 1439
     hh = value // 100
@@ -165,6 +171,7 @@ def hhmm_to_minute_index(value: int) -> int:
 
 
 def minute_index_to_hhmm(idx: int) -> int:
+    "Converts a 0-indexed minute of the day back to HHMM format."
     total = idx + 1
     hh = total // 60
     mm = total % 60
@@ -175,6 +182,7 @@ VALID_HHMM_TIMES = [minute_index_to_hhmm(i) for i in range(1440)]
 
 
 def compress_hhmm_ranges(values: list[int]) -> str:
+    "Compresses a list of HHMM times into a concise range string."
     if not values:
         return "NONE"
 
@@ -197,11 +205,13 @@ def compress_hhmm_ranges(values: list[int]) -> str:
 
 
 def get_years(conn: sqlite3.Connection) -> list[int]:
+    "Retrieves a sorted list of unique years present in the database."
     rows = conn.execute("SELECT DISTINCT year FROM dedup_rows ORDER BY year;").fetchall()
     return [r[0] for r in rows]
 
 
 def write_scope_file(conn: sqlite3.Connection, years: list[int], out_path: Path) -> int:
+    "Writes sorted data rows for specified years to an output file."
     placeholders = ",".join("?" for _ in years)
     query = (
         "SELECT row_tail FROM dedup_rows "
@@ -217,6 +227,7 @@ def write_scope_file(conn: sqlite3.Connection, years: list[int], out_path: Path)
 
 
 def write_year_files(conn: sqlite3.Connection, years: list[int], out_dir: Path) -> dict[int, int]:
+    "Generates individual cleaned CSV files for each year."
     written: dict[int, int] = {}
     for year in years:
         out_path = out_dir / f"stw_{year}_cleaned.csv"
@@ -226,6 +237,7 @@ def write_year_files(conn: sqlite3.Connection, years: list[int], out_dir: Path) 
 
 
 def select_ten_year_window(years: list[int], year_counts: dict[int, int]) -> list[int]:
+    "Selects the first 10 years of available data for processing."
     del year_counts
     if len(years) <= 10:
         return years
@@ -239,6 +251,7 @@ def log_missing_timestamps(
     years: list[int],
     log_path: Path,
 ) -> MissingSummary:
+    "Identifies and logs missing timestamps for specified years."
     placeholders = ",".join("?" for _ in years)
     query = (
         "SELECT year, day, time FROM dedup_rows "
@@ -313,6 +326,7 @@ def write_summary_report(
     ten_year_rows: int,
     ten_year_missing: MissingSummary,
 ) -> None:
+    "Generates a comprehensive summary report of the data processing."
     duplicates_removed = ingest.valid_rows - unique_rows
     lines = [
         f"Source files scanned: {ingest.files_seen}",
@@ -341,6 +355,7 @@ def write_summary_report(
 
 
 def recheck_ten_year_file(ten_year_file: Path, missing_combined_dir: Path) -> tuple[int, int, MissingSummary]:
+    "Verifies the integrity and completeness of the 10-year combined file."
     conn = init_db(RECHECK_DB)
     stats = ingest_files(conn, [ten_year_file], drop_first_col=False)
     unique_rows = conn.execute("SELECT COUNT(*) FROM dedup_rows;").fetchone()[0]
@@ -357,6 +372,7 @@ def recheck_ten_year_file(ten_year_file: Path, missing_combined_dir: Path) -> tu
 
 
 def main() -> None:
+    "Orchestrates the entire data cleaning and consolidation workflow."
     OUT_DIR.mkdir(exist_ok=True)
     YEARLY_CLEANED_DIR.mkdir(parents=True, exist_ok=True)
     COMBINED_DIR.mkdir(parents=True, exist_ok=True)
