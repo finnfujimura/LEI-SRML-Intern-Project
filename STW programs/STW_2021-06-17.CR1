@@ -1,0 +1,127 @@
+' CR1000 Series Datalogger
+' STW_PIR Logger Just PIR data
+
+' Program author: JTP 2021-06-16
+' Adapted from previous EUOB program.
+' Revisions:
+' 2021-06-16 JTP: Translated STW program to CR1000 language
+' 2021-06-16 JTP: Installed SR20 pyranometers
+' 2021-06-16 JTP: Take out PSP sensors
+
+' **********************************************************************
+' Wiring AND ports
+
+' PIR measurement = PIR_30923F3 (M = .2577 From previous program)
+' Thermopile Channel 5
+' Case T SE (11 - E1)
+' Dome T SE (12 - E2)
+' PIR Wiring
+' Red 5H
+' White 5L
+' Purple - SE11 (this is the case)
+' Gray - Ground (this is the case)
+' 20 kOhm resistor - VX1 to SE11
+' Orange - SE12 (this is the dome)
+' Green - Ground (this is the dome)
+' 20 kOhm resistor - VX2 to SE12
+
+' ************************* Define Constants **************************
+
+' Define some constants for the PIR measurement
+Const SIG = 5.6704e-8 'Stephan-Boltzman Constant
+Const PIR_M = 257.7 ' Multiplier of STW PIR (Not sure of the origin of this number)
+Const PIR_KO = 0.0
+'Const PIR_K1 = 0.2907 '1/Calibration factor provided by Eppley
+Const PIR_K1 = 0.2994
+Const PIR_K2 = 1.0
+Const PIR_K3 = -4.0
+Const PIR_Kr = 0.0e-4 'Not used in formula, caused bias
+
+'Constants used for case and dome temperature measurements
+Const Temp_A = 1.0295e-3
+Const Temp_B = 2.391e-4
+Const Temp_C = 1.568e-7
+
+Public PIR_mV, PIR_uV
+Public PIR_Net, PIR_In
+Public Case_mV, Dome_mV
+Public Temp_XCase, Temp_XDome
+Public Case_TempK, Dome_TempK
+Public PIR_K1Factor, PIR_K2Factor, PIR_K3Factor
+Units PIR_mV = mVolts
+Units PIR_uV = uVolts
+Units Case_mV = mVolts
+Units Dome_mV = mVolts
+Units Case_TempK = Kelvin
+Units Dome_TempK = Kelvin
+
+' Define some other constants
+Public PTemp ' Logger temperature
+Public batt_volt ' Voltage of the battery
+
+' **********************************************************************
+'Define Data Tables
+' One minute table
+' Output each instrument average voltage
+' Output each instrument standard deviation voltage
+' output the battery voltage
+DataTable (STW_PIR_1min,True,-1)
+  DataInterval (0,1,Min,10)
+  ' PIR
+  Average (1,PIR_In,FP2,False)
+  Average (1,PIR_Net,FP2,False)
+  Average (1,Case_TempK,FP2,False)
+  Average (1,Dome_TempK,FP2,False)
+
+  Sample (1,batt_volt,FP2)
+EndTable
+
+
+' **********************************************************************
+' Set security for the logger (Not sure if this works)
+SetSecurity (4021,3691,7738)
+
+' **********************************************************************
+'Main Program
+BeginProg
+  Scan (1,Sec,0,0)
+
+    Battery (batt_volt)
+    PanelTemp (PTemp,250)
+
+    ' Longwave GHI PIR measurments (START)
+
+    'Generic Differential Voltage measurements PIR_mV:
+    VoltDiff(PIR_mV,1,mV2_5,2,True,0,_60Hz,1.0,0.0)
+    ' Convert to irradiance
+    PIR_Net = PIR_mV * PIR_M
+
+    'Generic Half Bridge measurements Case_mV:
+    BrHalf(Case_mV,1,mV2500,5,Vx1,1,2500,False,30000,_60Hz,1000,0.0)
+    'Case temperature in Kelvin
+    Temp_XCase = 20000 * (Case_mV / (1000 - Case_mV))
+    Case_TempK = 1 / (Temp_A + (Temp_B * LN(Temp_XCase)) + (Temp_C * (LN(Temp_XCase))^3))
+
+    'Generic Half Bridge measurements Dome_mV:
+    BrHalf (Dome_mV,1,mV2500,6,Vx2,1,1000,False,30000,_60Hz,1000,0.0)
+    'Dome temperature in Kelvin
+    Temp_XDome = 20000 * (Dome_mV / (1000 - Dome_mV))
+    Dome_TempK = 1 / (Temp_A + (Temp_B * LN(Temp_XDome)) + (Temp_C * (LN(Temp_XDome))^3))
+
+    'Calculation of Radiation In after case and dome temperature corrections
+    PIR_K1Factor = PIR_K1 * PIR_uV
+    PIR_K2Factor = PIR_K2 * SIG * (Case_TempK^4)
+    PIR_K3Factor = PIR_K3 * SIG * ((Dome_TempK^4) - (Case_TempK^4))
+    PIR_In = PIR_KO + PIR_K1Factor + PIR_K2Factor + PIR_K3Factor
+
+    ' PIR (END)
+
+
+
+    ' Call the one minute table
+    CallTable STW_PIR_1min
+
+
+  NextScan
+EndProg
+

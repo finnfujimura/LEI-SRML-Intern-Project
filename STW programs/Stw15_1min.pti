@@ -1,0 +1,42 @@
+Program Trace Information File for:  Stw15_1min.csi
+Date: 10/4/2015
+Time: 16:36:13
+
+T = Program Table Number
+N = Sequential Program Instruction Location Number
+Instruction = Instruction Number and Name
+
+Inst ExTm = Individual Instruction Execution Time
+Block ExTm = Cumulative Execution Time for program block,
+             i.e., subroutine
+Prog ExTm = Cumulative Total Program Execution Time
+
+                                                          Output Flag High
+                                   Inst  Block   Prog     Inst  Block   Prog
+                                   ExTm   ExTm   ExTm     ExTm   ExTm   ExTm
+T|N|Instruction                   (msec) (msec) (msec)   (msec) (msec) (msec)
+---------------                   ------ ------ ------   ------ ------ ------
+1|1|10 Batt Voltage                 8.3    8.3    8.3      8.3    8.3    8.3
+1|2|17 Internal Temperature         6.2   14.5   14.5      6.2   14.5   14.5
+1|3|2 Volt (Diff)                  26.4   40.9   40.9     26.4   40.9   40.9
+1|4|2 Volt (Diff)                  26.4   67.3   67.3     26.4   67.3   67.3
+1|5|11 Temp (107)                   9.9   77.2   77.2      9.9   77.2   77.2
+1|6|92 If time is                   0.7   77.9   77.9      0.7   77.9   77.9
+ Output Flag Set @ 16 for Array 506
+1|7|80 Set Active Storage Area      0.3   78.2   78.2      0.3   78.2   78.2
+1|8|77 Real Time                    0.2   78.4   78.4      3.8   82.0   82.0
+ Output Data 3 Values
+1|9|71 Average                      3.9   82.3   82.3     14.7   96.7   96.7
+ Output Data 3 Values
+1|10|70 Sample                      0.2   82.5   82.5      0.9   97.6   97.6
+ Output Data 1 Values
+
+Program Table 1 Execution Interval    1.000 Seconds
+
+Table 1 Estimated Total Program Execution Time in msec   82.5 w/Output   97.6
+
+Table 1 Estimated Total Final Storage Locations used per day 11520
+
+
+
+Estimated Total Final Storage Locations used per day 11520

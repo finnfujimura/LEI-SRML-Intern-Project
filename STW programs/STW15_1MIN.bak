@@ -1,0 +1,127 @@
+;{CR10X}
+;Seattle station
+;
+;Diff 1 psp 23620 RS= 8.32298 (10-2015)
+;Diff 2 NIP 17009 RS= 8.41331 (10-2015)
+;SE 5   Air Temp
+;1K resistor to AG from SE 5
+;
+*Table 1 Program
+  01: 1.0       Execution Interval (seconds)
+
+1:  Batt Voltage (P10)
+ 1: 5        Loc [ Batt_V    ]
+
+2:  Internal Temperature (P17)
+ 1: 6        Loc [ CR10_temp ]
+
+3:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 1        DIFF Channel
+ 4: 1        Loc [ psp_23620 ]
+ 5: 120.149  Multiplier
+ 6: 0.0      Offset
+
+4:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 2        DIFF Channel
+ 4: 2        Loc [ NIP_17009 ]
+ 5: 118.859  Multiplier
+ 6: 0.0      Offset
+
+5:  Temp (107) (P11)
+ 1: 1        Reps
+ 2: 5        SE Channel
+ 3: 1        Excite all reps w/E1
+ 4: 3        Loc [ AirTemp_C ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+6:  If time is (P92)
+ 1: 0        Minutes (Seconds --) into a
+ 2: 1        Interval (same units as above)
+ 3: 10       Set Output Flag High (Flag 0)
+
+7:  Set Active Storage Area (P80)^4554
+ 1: 1        Final Storage Area 1
+ 2: 506      Array ID
+
+8:  Real Time (P77)^2806
+ 1: 1220     Year,Day,Hour/Minute (midnight = 2400)
+
+9:  Average (P71)^3585
+ 1: 3        Reps
+ 2: 1        Loc [ psp_23620 ]
+
+10:  Sample (P70)^16881
+ 1: 1        Reps
+ 2: 5        Loc [ Batt_V    ]
+
+
+*Table 2 Program
+  02: 0.0000    Execution Interval (seconds)
+
+*Table 3 Subroutines
+
+End Program
+
+
+
+
+-Input Locations-
+1 psp_23620 1 1 1
+2 NIP_17009 1 0 1
+3 AirTemp_C 1 0 1
+4 _________ 1 0 0
+5 Batt_V    1 1 1
+6 CR10_temp 1 0 1
+7 CSI_R     0 0 0
+8 _________ 0 0 0
+9 _________ 0 0 0
+10 _________ 0 0 0
+11 _________ 0 0 0
+12 _________ 0 0 0
+13 _________ 0 0 0
+14 _________ 0 0 0
+15 _________ 0 0 0
+16 _________ 0 0 0
+17 _________ 0 0 0
+18 _________ 0 0 0
+19 _________ 0 0 0
+20 _________ 0 0 0
+21 _________ 0 0 0
+22 _________ 0 0 0
+23 _________ 0 0 0
+24 _________ 0 0 0
+25 _________ 0 0 0
+26 _________ 0 0 0
+27 _________ 0 0 0
+28 _________ 0 0 0
+-Program Security-
+0000
+0000
+0000
+-Mode 4-
+-Final Storage Area 2-
+0
+-CR10X ID-
+0
+-CR10X Power Up-
+3
+-CR10X Compile Setting-
+3
+-CR10X RS-232 Setting-
+-1
+-DLD File Labels-
+0
+-Final Storage Labels-
+0,psp_23620_AVG~1,3585
+0,NIP_17009_AVG~2
+0,AirTemp_C_AVG~3
+1,Batt_V~5,16881
+2,506,4554
+3,Year_RTM,2806
+3,Day_RTM
+3,Hour_Minute_RTM

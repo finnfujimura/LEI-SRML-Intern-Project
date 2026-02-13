@@ -1,0 +1,725 @@
+;{CR10X}
+;
+; Seattle UW station
+; Date of last edit to program 2021-07-02
+; NOTES
+; All voltages are recorded first
+; Irradiance values calculated second
+; SR20 temperature adjusted voltages are exported
+
+; *********************************************
+; Wiring and ports
+
+; GHI measurement = SR20_4764 (R_2021.5 = 16.6112)
+; GHI Channel Diff-5
+; SR20-T2 Wiring Diagram
+; White: Pyranometer, High (Diff-5)
+; Green: Pyranometer, Low (Diff-5)
+; Brown: Heater, SW12 (DO NOT CONNECT)
+; Yellow: Heater, Ground (DO NOT CONNECT)
+; Red: Thermistor, Single ended (SE-12)
+; Pink: Thermistor, Single ended (SE-12) (same as red)
+; Blue: Thermistor, Analog Ground
+; Gray: Thermistor, Ground (same as blue)
+; 10, Resistor,  Vx - Red,Pink
+
+; DNI measurement = NIP_17009 (R_2020 = 8.3756)
+; DNI Channel Diff-4
+; Black = High
+; Clean = Low
+; Ground
+
+; DHI measurement = SR20_5218 (R_2021.5 = 13.3057)
+; DHI Channel Diff-7
+; SR20-T2 Wiring Diagram
+; White: Pyranometer, High (Diff-2)
+; Green: Pyranometer, Low (Diff-2)
+; Brown: Heater, SW12 (DO NOT CONNECT)
+; Yellow: Heater, Ground (DO NOT CONNECT)
+; Red: Thermistor, Single ended (SE-5)
+; Pink: Thermistor, Single ended (SE-5) (same as red)
+; Blue: Thermistor, Analog Ground
+; Gray: Thermistor, Ground (same as blue)
+; 10, Resistor,  Vx - Red,Pink
+
+; Air Temperature = SE 6 (1K resistor to AG from SE E2???)
+
+
+; *********************************************
+; EDITS
+; 2020-08-01 JTP: Program developed
+;                PIR adjustments to the this program were from the Campbell base PIR program, and EUO_PIR and the program that came with the instrument from Seattle
+; 2021-06-17 JTP: PIR taken out of this program. Put in the STW_PIR program
+; 2021-06-17 JTP: PSP sensors taken out. SR20 sensors put in.
+; *********************************************
+
+*Table 1 Program
+  01: 2         Execution Interval (seconds)
+
+;***********************************************
+; Define the constants
+
+; GHI multiplier
+; M = 1000 / R, R_4764(2021.5) = 16.6112
+1:  Z=F x 10^n (P30)
+ 1: 60.2003  F
+ 2: 00       n, Exponent of 10
+ 3: 1        Z Loc [ GHI_M     ]
+
+; DNI multiplier
+2:  Z=F x 10^n (P30)
+ 1: 119.740  F
+ 2: 00       n, Exponent of 10
+ 3: 2        Z Loc [ DNI_M     ]
+
+; DHI multiplier
+; M = 1000 / R, R_5218(2021.5) = 13.3057
+3:  Z=F x 10^n (P30)
+ 1: 75.1558  F
+ 2: 00       n, Exponent of 10
+ 3: 3        Z Loc [ DHI_M     ]
+
+; SR20 temperature correction terms
+; SR20_4764_A
+4:  Z=F x 10^n (P30)
+ 1: -9.6642  F
+ 2: -6       n, Exponent of 10
+ 3: 57       Z Loc [ GHIA_4764 ]
+
+5:  Z=F x 10^n (P30)
+ 1: -.1505   F
+ 2: -4       n, Exponent of 10
+ 3: 58       Z Loc [ GHIB_4764 ]
+
+6:  Z=F x 10^n (P30)
+ 1: 1.0042   F
+ 2: 00       n, Exponent of 10
+ 3: 59       Z Loc [ GHIC_4764 ]
+
+7:  Z=F x 10^n (P30)
+ 1: -6.8207  F
+ 2: -6       n, Exponent of 10
+ 3: 60       Z Loc [ DHIA_5218 ]
+
+8:  Z=F x 10^n (P30)
+ 1: .7901    F
+ 2: -4       n, Exponent of 10
+ 3: 61       Z Loc [ DHIB_5218 ]
+
+9:  Z=F x 10^n (P30)
+ 1: 1.0011   F
+ 2: 00       n, Exponent of 10
+ 3: 62       Z Loc [ DHIC_5218 ]
+
+10:  Z=F x 10^n (P30)
+ 1: 3        F
+ 2: 00       n, Exponent of 10
+ 3: 63       Z Loc [ Num3      ]
+
+11:  Z=F x 10^n (P30)
+ 1: 1.0295   F
+ 2: -3       n, Exponent of 10
+ 3: 64       Z Loc [ SR20YSI_A ]
+
+12:  Z=F x 10^n (P30)
+ 1: 2.391    F
+ 2: -4       n, Exponent of 10
+ 3: 65       Z Loc [ SR20YSI_B ]
+
+13:  Z=F x 10^n (P30)
+ 1: 1.568    F
+ 2: -7       n, Exponent of 10
+ 3: 66       Z Loc [ SR20YSI_C ]
+
+14:  Z=F x 10^n (P30)
+ 1: 20       F
+ 2: 00       n, Exponent of 10
+ 3: 91       Z Loc [ num20     ]
+
+; Set the control port 8 to output
+; Used in controling the heater
+15:  Set Port(s) (P20)
+ 1: 7999     C8..C5 = output/nc/nc/nc
+ 2: 9999     C4..C1 = nc/nc/nc/nc
+
+; *********************************************
+; Make voltage measurements
+
+; DNI measurement
+16:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 4        DIFF Channel
+ 4: 12       Loc [ DNI_mV    ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; GHI measurement
+17:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 5        DIFF Channel
+ 4: 6        Loc [ GHImVnTC  ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; DHI measurement
+18:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 2        DIFF Channel
+ 4: 8        Loc [ DHImVnTC  ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; Measure the Air temperature
+19:  Temp (107) (P11)
+ 1: 1        Reps
+ 2: 6        SE Channel
+ 3: 2        Excite all reps w/E2
+ 4: 28       Loc [ AirTemp_C ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; Measure SR20 temperature
+20:  AC Half Bridge (P5)
+ 1: 1        Reps
+ 2: 00       Range Option
+ 3: 12       SE Channel
+ 4: 3        Excite all reps w/Exchan 3
+ 5: 2500     mV Excitation
+ 6: 67       Loc [ GHI_T_mV  ]
+ 7: 1.0      Multiplier
+ 8: 0.0      Offset
+
+; Measure SR20 temperature
+21:  AC Half Bridge (P5)
+ 1: 1        Reps
+ 2: 00       Range Option
+ 3: 5        SE Channel
+ 4: 1        Excite all reps w/Exchan 1
+ 5: 2500     mV Excitation
+ 6: 68       Loc [ DHI_T_mV  ]
+ 7: 1.0      Multiplier
+ 8: 0.0      Offset
+
+; Measure the Battery Voltage
+22:  Batt Voltage (P10)
+ 1: 29       Loc [ Batt_V    ]
+
+; ***********************************************
+; Compute irradiance values (I = V * M)
+
+; First save the raw millivolt SR20 temperature reading
+; This will be overriddn in the next step
+23:  Z=X (P31)
+ 1: 67       X Loc [ GHI_T_mV  ]
+ 2: 69       Z Loc [ GHI_T_R   ]
+
+24:  Z=X (P31)
+ 1: 68       X Loc [ DHI_T_mV  ]
+ 2: 70       Z Loc [ DHI_T_R   ]
+
+; Convert voltage to resistance
+25:  BR Transform Rf[X/(1-X)] (P59)
+ 1: 1        Reps
+ 2: 69       Loc [ GHI_T_R   ]
+ 3: 10000    Multiplier (Rf)
+
+26:  BR Transform Rf[X/(1-X)] (P59)
+ 1: 1        Reps
+ 2: 70       Loc [ DHI_T_R   ]
+ 3: 10000    Multiplier (Rf)
+
+
+; Equation to convert YSI 10K thermistor resistance to temperature in degrees K
+; T = 1 / (a + b(LnR) + c (LnR)^3) - 273.15
+
+; Coefficents used in equation
+; a = 0.0010295 = ConstA
+; b = 0.0002391 = ConstB
+; c = 1.568E-7 = ConstC
+
+; Take natural log
+27:  Z=LN(X) (P40)
+ 1: 69       X Loc [ GHI_T_R   ]
+ 2: 71       Z Loc [ Ln_GHITR  ]
+
+28:  Z=LN(X) (P40)
+ 1: 70       X Loc [ DHI_T_R   ]
+ 2: 72       Z Loc [ Ln_DHITR  ]
+
+; Cube natural log
+29:  Z=X^Y (P47)
+ 1: 71       X Loc [ Ln_GHITR  ]
+ 2: 63       Y Loc [ Num3      ]
+ 3: 73       Z Loc [ Ln3_GHITR ]
+
+30:  Z=X^Y (P47)
+ 1: 72       X Loc [ Ln_DHITR  ]
+ 2: 63       Y Loc [ Num3      ]
+ 3: 74       Z Loc [ Ln3_DHITR ]
+
+; Multiply B * Ln(R)
+31:  Z=X*Y (P36)
+ 1: 65       X Loc [ SR20YSI_B ]
+ 2: 71       Y Loc [ Ln_GHITR  ]
+ 3: 75       Z Loc [ BLn_GHI   ]
+
+32:  Z=X*Y (P36)
+ 1: 65       X Loc [ SR20YSI_B ]
+ 2: 72       Y Loc [ Ln_DHITR  ]
+ 3: 77       Z Loc [ BLn_DHI   ]
+
+; Multiply C * Ln(R)^3
+33:  Z=X*Y (P36)
+ 1: 66       X Loc [ SR20YSI_C ]
+ 2: 73       Y Loc [ Ln3_GHITR ]
+ 3: 78       Z Loc [ CLn3_GHI  ]
+
+34:  Z=X*Y (P36)
+ 1: 66       X Loc [ SR20YSI_C ]
+ 2: 74       Y Loc [ Ln3_DHITR ]
+ 3: 80       Z Loc [ CLn3_DHI  ]
+
+; Add A + B Ln(R)
+35:  Z=X+Y (P33)
+ 1: 64       X Loc [ SR20YSI_A ]
+ 2: 75       Y Loc [ BLn_GHI   ]
+ 3: 81       Z Loc [ AB_GHI    ]
+
+36:  Z=X+Y (P33)
+ 1: 64       X Loc [ SR20YSI_A ]
+ 2: 77       Y Loc [ BLn_DHI   ]
+ 3: 82       Z Loc [ AB_DHI    ]
+
+; Add A + B Ln(R) + C Ln(R)^3
+37:  Z=X+Y (P33)
+ 1: 78       X Loc [ CLn3_GHI  ]
+ 2: 81       Y Loc [ AB_GHI    ]
+ 3: 83       Z Loc [ ABC_GHI   ]
+
+38:  Z=X+Y (P33)
+ 1: 80       X Loc [ CLn3_DHI  ]
+ 2: 82       Y Loc [ AB_DHI    ]
+ 3: 85       Z Loc [ ABC_DHI   ]
+
+; Take the inverse
+39:  Z=1/X (P42)
+ 1: 83       X Loc [ ABC_GHI   ]
+ 2: 86       Z Loc [ ooABC_GHI ]
+
+40:  Z=1/X (P42)
+ 1: 85       X Loc [ ABC_DHI   ]
+ 2: 87       Z Loc [ ooABC_DHI ]
+
+; Subtract 273.15 (To convert to kelvin)
+41:  Z=X+F (P34)
+ 1: 86       X Loc [ ooABC_GHI ]
+ 2: -273.15  F
+ 3: 89       Z Loc [ GHI_T     ]
+
+42:  Z=X+F (P34)
+ 1: 87       X Loc [ ooABC_DHI ]
+ 2: -273.15  F
+ 3: 90       Z Loc [ DHI_T     ]
+
+; Make sure the GHI temperature is resonable
+43:  If (X<=>F) (P89)
+ 1: 89       X Loc [ GHI_T     ]
+ 2: 4        <
+ 3: -30      F
+ 4: 30       Then Do
+
+     44:  Z=X (P31)
+      1: 91       X Loc [ num20     ]
+      2: 89       Z Loc [ GHI_T     ]
+
+45:  End (P95)
+
+; Make sure the DHI temperature is resonable
+46:  If (X<=>F) (P89)
+ 1: 90       X Loc [ DHI_T     ]
+ 2: 4        <
+ 3: -30      F
+ 4: 30       Then Do
+
+     47:  Z=X (P31)
+      1: 91       X Loc [ num20     ]
+      2: 90       Z Loc [ DHI_T     ]
+
+48:  End (P95)
+
+
+49:  If (X<=>F) (P89)
+ 1: 89       X Loc [ GHI_T     ]
+ 2: 3        >=
+ 3: 45       F
+ 4: 30       Then Do
+
+     50:  Z=X (P31)
+      1: 91       X Loc [ num20     ]
+      2: 89       Z Loc [ GHI_T     ]
+
+51:  End (P95)
+
+52:  If (X<=>F) (P89)
+ 1: 90       X Loc [ DHI_T     ]
+ 2: 3        >=
+ 3: 45       F
+ 4: 30       Then Do
+
+     53:  Z=X (P31)
+      1: 91       X Loc [ num20     ]
+      2: 90       Z Loc [ DHI_T     ]
+
+54:  End (P95)
+
+
+; Compute the temperature correction
+; Square the temperature
+55:  Z=X*Y (P36)
+ 1: 89       X Loc [ GHI_T     ]
+ 2: 89       Y Loc [ GHI_T     ]
+ 3: 92       Z Loc [ GHI_T2    ]
+
+56:  Z=X*Y (P36)
+ 1: 90       X Loc [ DHI_T     ]
+ 2: 90       Y Loc [ DHI_T     ]
+ 3: 93       Z Loc [ DHI_T2    ]
+
+; A * (GHI_T)^2
+57:  Z=X*Y (P36)
+ 1: 57       X Loc [ GHIA_4764 ]
+ 2: 92       Y Loc [ GHI_T2    ]
+ 3: 96       Z Loc [ AGHI_T2   ]
+
+58:  Z=X*Y (P36)
+ 1: 60       X Loc [ DHIA_5218 ]
+ 2: 93       Y Loc [ DHI_T2    ]
+ 3: 97       Z Loc [ ADHI_T2   ]
+
+; B * GHI_T
+59:  Z=X*Y (P36)
+ 1: 58       X Loc [ GHIB_4764 ]
+ 2: 89       Y Loc [ GHI_T     ]
+ 3: 98       Z Loc [ BGHI_T    ]
+
+60:  Z=X*Y (P36)
+ 1: 61       X Loc [ DHIB_5218 ]
+ 2: 90       Y Loc [ DHI_T     ]
+ 3: 99       Z Loc [ BDHI_T    ]
+
+; A GHI_T^2 + B GHI_T
+61:  Z=X+Y (P33)
+ 1: 96       X Loc [ AGHI_T2   ]
+ 2: 98       Y Loc [ BGHI_T    ]
+ 3: 100      Z Loc [ ABGHI_T   ]
+
+62:  Z=X+Y (P33)
+ 1: 97       X Loc [ ADHI_T2   ]
+ 2: 99       Y Loc [ BDHI_T    ]
+ 3: 101      Z Loc [ ABDHI_T   ]
+
+; A GHI_T^2 + B GHI_T + C
+63:  Z=X+Y (P33)
+ 1: 100      X Loc [ ABGHI_T   ]
+ 2: 59       Y Loc [ GHIC_4764 ]
+ 3: 102      Z Loc [ ABCGHI_T  ]
+
+64:  Z=X+Y (P33)
+ 1: 101      X Loc [ ABDHI_T   ]
+ 2: 62       Y Loc [ DHIC_5218 ]
+ 3: 103      Z Loc [ ABCDHI_T  ]
+
+
+; Compute the temperature adjusted voltage
+; V_TC = V_nTC / tempcorrection
+65:  Z=X/Y (P38)
+ 1: 6        X Loc [ GHImVnTC  ]
+ 2: 102      Y Loc [ ABCGHI_T  ]
+ 3: 11       Z Loc [ GHI_mV    ]
+
+66:  Z=X/Y (P38)
+ 1: 8        X Loc [ DHImVnTC  ]
+ 2: 103      Y Loc [ ABCDHI_T  ]
+ 3: 13       Z Loc [ DHI_mV    ]
+
+; Compute GHI irradiance
+67:  Z=X*Y (P36)
+ 1: 1        X Loc [ GHI_M     ]
+ 2: 11       Y Loc [ GHI_mV    ]
+ 3: 21       Z Loc [ GHI_I     ]
+
+
+; Compute DNI irradiance
+68:  Z=X*Y (P36)
+ 1: 2        X Loc [ DNI_M     ]
+ 2: 12       Y Loc [ DNI_mV    ]
+ 3: 22       Z Loc [ DNI_I     ]
+
+; Compute DNI irradiance
+69:  Z=X*Y (P36)
+ 1: 3        X Loc [ DHI_M     ]
+ 2: 13       Y Loc [ DHI_mV    ]
+ 3: 23       Z Loc [ DHI_I     ]
+
+; If you want to turn the heater on, put some logic here
+;70:  If time is (P92)
+; 1: 0        Minutes (Seconds --) into a
+; 2: 120      Interval (same units as above)
+; 3: 48       Set Port 8 High
+;
+;71:  If time is (P92)
+; 1: 60       Minutes (Seconds --) into a
+; 2: 120      Interval (same units as above)
+; 3: 58       Set Port 8 Low
+
+
+
+; **********************************************
+; Output data to the one minute table
+
+; At the start of every minute average the results
+72:  If time is (P92)
+ 1: 0        Minutes (Seconds --) into a
+ 2: 1        Interval (same units as above)
+ 3: 10       Set Output Flag High (Flag 0) ;
+
+; Assign the array id number
+73:  Set Active Storage Area (P80)^16703
+ 1: 1        Final Storage Area 1
+ 2: 506      Array ID
+
+; Output the Datetime stamp (3 columns)
+74:  Real Time (P77)^26476
+ 1: 1220     Year,Day,Hour/Minute (midnight = 2400)
+
+; Output the GHI_mV, DNI_mV, DHI_mV
+75:  Average (P71)^22901
+ 1: 1        Reps
+ 2: 11       Loc [ GHI_mV    ]
+
+76:  Average (P71)^25274
+ 1: 1        Reps
+ 2: 12       Loc [ DNI_mV    ]
+
+77:  Average (P71)^21660
+ 1: 1        Reps
+ 2: 13       Loc [ DHI_mV    ]
+
+; Output the GHI_I, DNI_I, DHI_I
+78:  Average (P71)^22001
+ 1: 1        Reps
+ 2: 21       Loc [ GHI_I     ]
+
+79:  Average (P71)^741
+ 1: 1        Reps
+ 2: 22       Loc [ DNI_I     ]
+
+80:  Average (P71)^31612
+ 1: 1        Reps
+ 2: 23       Loc [ DHI_I     ]
+
+
+; Output the stadard deviation of GHI_mV, DNI_mV, DHI_mV
+81:  Standard Deviation (P82)^4703
+ 1: 1        Reps
+ 2: 11       Sample Loc [ GHI_mV    ]
+
+; Output the stadard deviation of GHI_mV, DNI_mV, DHI_mV
+82:  Standard Deviation (P82)^7277
+ 1: 1        Reps
+ 2: 12       Sample Loc [ DNI_mV    ]
+
+; Output the stadard deviation of GHI_mV, DNI_mV, DHI_mV
+83:  Standard Deviation (P82)^13811
+ 1: 1        Reps
+ 2: 13       Sample Loc [ DHI_mV    ]
+
+84:  Average (P71)^1653
+ 1: 1        Reps
+ 2: 28       Loc [ AirTemp_C ]
+
+; SR20_GHI temperature
+85:  Average (P71)^24745
+ 1: 1        Reps
+ 2: 89       Loc [ GHI_T     ]
+
+86:  Average (P71)^31993
+ 1: 1        Reps
+ 2: 90       Loc [ DHI_T     ]
+
+87:  Sample (P70)^4293
+ 1: 1        Reps
+ 2: 29       Loc [ Batt_V    ]
+
+*Table 2 Program
+  02: 0.0000    Execution Interval (seconds)
+
+*Table 3 Subroutines
+
+
+End Program
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-Input Locations-
+1 GHI_M     1 1 1
+2 DNI_M     1 0 1
+3 DHI_M     1 1 1
+4 GHI_A     1 0 0
+5 _________ 1 0 0
+6 GHImVnTC  1 1 1
+7 _________ 1 0 0
+8 DHImVnTC  1 1 1
+9 _________ 0 0 0
+10 _________ 0 0 0
+11 GHI_mV    5 3 1
+12 DNI_mV    1 3 1
+13 DHI_mV    1 3 1
+14 _________ 1 0 0
+15 _________ 1 0 0
+16 _________ 1 0 0
+17 _________ 1 0 0
+18 _________ 1 0 0
+19 _________ 0 0 0
+20 _________ 0 0 0
+21 GHI_I     1 1 1
+22 DNI_I     1 1 1
+23 DHI_I     1 1 1
+24 _________ 1 0 0
+25 _________ 1 0 0
+26 _________ 1 0 0
+27 _________ 1 0 0
+28 AirTemp_C 1 1 2
+29 Batt_V    1 1 1
+30 _________ 0 0 0
+31 _________ 1 0 0
+32 _________ 1 0 0
+33 _________ 1 0 0
+34 _________ 1 0 0
+35 _________ 1 0 0
+36 _________ 1 0 0
+37 _________ 1 0 0
+38 _________ 1 0 0
+39 _________ 1 0 0
+40 _________ 1 0 0
+41 _________ 1 0 0
+42 _________ 1 0 0
+43 _________ 1 0 0
+44 _________ 1 0 0
+45 _________ 1 0 0
+46 _________ 1 0 0
+47 _________ 1 0 0
+48 _________ 1 0 0
+49 _________ 1 0 0
+50 _________ 1 0 0
+51 _________ 0 0 0
+52 _________ 1 0 0
+53 _________ 1 0 0
+54 _________ 1 0 0
+55 _________ 1 0 0
+56 _________ 1 0 0
+57 GHIA_4764 1 1 1
+58 GHIB_4764 1 1 1
+59 GHIC_4764 1 1 1
+60 DHIA_5218 1 1 1
+61 DHIB_5218 1 1 1
+62 DHIC_5218 1 1 1
+63 Num3      1 2 1
+64 SR20YSI_A 1 2 1
+65 SR20YSI_B 1 2 1
+66 SR20YSI_C 1 2 1
+67 GHI_T_mV  1 1 1
+68 DHI_T_mV  1 1 1
+69 GHI_T_R   1 2 2
+70 DHI_T_R   1 2 2
+71 Ln_GHITR  1 2 1
+72 Ln_DHITR  1 2 1
+73 Ln3_GHITR 1 1 1
+74 Ln3_DHITR 1 1 1
+75 BLn_GHI   1 1 1
+76 _________ 1 0 0
+77 BLn_DHI   1 1 1
+78 CLn3_GHI  1 1 1
+79 _________ 1 0 0
+80 CLn3_DHI  1 1 1
+81 AB_GHI    1 1 1
+82 AB_DHI    1 1 1
+83 ABC_GHI   1 1 1
+84 _________ 1 0 0
+85 ABC_DHI   1 1 1
+86 ooABC_GHI 1 1 1
+87 ooABC_DHI 1 1 1
+88 _________ 1 0 0
+89 GHI_T     1 6 3
+90 DHI_T     1 6 3
+91 num20     1 4 1
+92 GHI_T2    1 1 1
+93 DHI_T2    1 1 1
+94 _________ 1 0 0
+95 _________ 1 0 0
+96 AGHI_T2   1 1 1
+97 ADHI_T2   1 1 1
+98 BGHI_T    1 1 1
+99 BDHI_T    1 1 1
+100 ABGHI_T   1 1 1
+101 ABDHI_T   1 1 1
+102 ABCGHI_T  1 1 1
+103 ABCDHI_T  1 1 1
+104 _________ 1 0 0
+105 _________ 1 0 0
+-Program Security-
+4021
+3691
+7738
+-Mode 4-
+-Final Storage Area 2-
+0
+-CR10X ID-
+0
+-CR10X Power Up-
+3
+-CR10X Compile Setting-
+3
+-CR10X RS-232 Setting-
+-1
+-DLD File Labels-
+0
+-Final Storage Labels-
+0,506,16703
+1,Year_RTM,26476
+1,Day_RTM
+1,Hour_Minute_RTM
+2,GHI_mV_AVG~11,22901
+3,GHI_mV_STD~11,4703
+4,AirTemp_C_AVG~28,1653
+5,Batt_V~29,4293
+6,DNI_mV_AVG~12,25274
+7,DHI_mV_AVG~13,21660
+8,DNI_mV_STD~12,7277
+9,DHI_mV_STD~13,13811
+10,GHI_T_AVG~89,24745
+11,DHI_T_AVG~90,31993
+12,GHI_I_AVG~21,22001
+13,DNI_I_AVG~22,741
+14,DHI_I_AVG~23,31612

@@ -1,0 +1,16 @@
+Final Storage Label File for:  STW17_1MIN.csi
+Date:  7/25/2017
+Time:  13:57:02
+
+506 Output_Table   1.00 Min
+1 506 L
+2 Year_RTM  L
+3 Day_RTM  L
+4 Hour_Minute_RTM  L
+5 psp_17846_AVG  L
+6 NIP_17009_AVG  L
+7 AirTemp_C_AVG  L
+8 Batt_V  L
+
+
+Estimated Total Final Storage Locations used per day 11520

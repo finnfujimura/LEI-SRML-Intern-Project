@@ -1,0 +1,110 @@
+Program Trace Information File for:  STW_2020-08-14B.csi
+Date: 8/14/2020
+Time: 14:33:38
+
+T = Program Table Number
+N = Sequential Program Instruction Location Number
+Instruction = Instruction Number and Name
+
+Inst ExTm = Individual Instruction Execution Time
+Block ExTm = Cumulative Execution Time for program block,
+             i.e., subroutine
+Prog ExTm = Cumulative Total Program Execution Time
+
+                                                          Output Flag High
+                                   Inst  Block   Prog     Inst  Block   Prog
+                                   ExTm   ExTm   ExTm     ExTm   ExTm   ExTm
+T|N|Instruction                   (msec) (msec) (msec)   (msec) (msec) (msec)
+---------------                   ------ ------ ------   ------ ------ ------
+1|1|30 Z=F x 10^n                   1.0    1.0    1.0      1.0    1.0    1.0
+1|2|30 Z=F x 10^n                   1.0    2.0    2.0      1.0    2.0    2.0
+1|3|30 Z=F x 10^n                   1.0    3.0    3.0      1.0    3.0    3.0
+1|4|30 Z=F x 10^n                   1.0    4.0    4.0      1.0    4.0    4.0
+1|5|30 Z=F x 10^n                   1.0    5.0    5.0      1.0    5.0    5.0
+1|6|30 Z=F x 10^n                   1.0    6.0    6.0      1.0    6.0    6.0
+1|7|30 Z=F x 10^n                   0.4    6.4    6.4      0.4    6.4    6.4
+1|8|30 Z=F x 10^n                   0.2    6.6    6.6      0.2    6.6    6.6
+1|9|30 Z=F x 10^n                     *    6.6    6.6        *    6.6    6.6
+1|10|30 Z=F x 10^n                    *    6.6    6.6        *    6.6    6.6
+1|11|30 Z=F x 10^n                  1.0    7.6    7.6      1.0    7.6    7.6
+1|12|2 Volt (Diff)                 26.4   34.0   34.0     26.4   34.0   34.0
+1|13|2 Volt (Diff)                 26.4   60.4   60.4     26.4   60.4   60.4
+1|14|2 Volt (Diff)                 26.4   86.8   86.8     26.4   86.8   86.8
+1|15|2 Volt (Diff)                  9.7   96.5   96.5      9.7   96.5   96.5
+1|16|5 AC Half Bridge               8.7  105.2  105.2      8.7  105.2  105.2
+1|17|5 AC Half Bridge               8.7  113.9  113.9      8.7  113.9  113.9
+1|18|11 Temp (107)                  9.9  123.8  123.8      9.9  123.8  123.8
+1|19|10 Batt Voltage                8.3  132.1  132.1      8.3  132.1  132.1
+1|20|36 Z=X*Y                       1.5  133.6  133.6      1.5  133.6  133.6
+1|21|36 Z=X*Y                       1.5  135.1  135.1      1.5  135.1  135.1
+1|22|36 Z=X*Y                       1.5  136.6  136.6      1.5  136.6  136.6
+1|23|36 Z=X*Y                       1.5  138.1  138.1      1.5  138.1  138.1
+1|24|86 Do                          0.3  138.4  138.4      0.3  138.4  138.4
+  ----Subroutine 1---------------
+  3|1|85 Beginning of Subroutine    0.0    0.0  138.4      0.0    0.0  138.4
+  3|2|59 BR Transform Rf[X/(1-X)]   1.6    1.6  140.0      1.6    1.6  140.0
+  3|3|59 BR Transform Rf[X/(1-X)]   1.6    3.2  141.6      1.6    3.2  141.6
+  3|4|37 Z=X*F                      1.2    4.4  142.8      1.2    4.4  142.8
+  3|5|37 Z=X*F                      1.2    5.6  144.0      1.2    5.6  144.0
+  3|6|40 Z=LN(X)                    8.4   14.0  152.4      8.4   14.0  152.4
+  3|7|40 Z=LN(X)                    8.4   22.4  160.8      8.4   22.4  160.8
+  3|8|36 Z=X*Y                      1.5   23.9  162.3      1.5   23.9  162.3
+  3|9|36 Z=X*Y                      1.5   25.4  163.8      1.5   25.4  163.8
+  3|10|36 Z=X*Y                     1.5   26.9  165.3      1.5   26.9  165.3
+  3|11|36 Z=X*Y                     1.5   28.4  166.8      1.5   28.4  166.8
+  3|12|36 Z=X*Y                     1.5   29.9  168.3      1.5   29.9  168.3
+  3|13|36 Z=X*Y                     1.5   31.4  169.8      1.5   31.4  169.8
+  3|14|36 Z=X*Y                     1.5   32.9  171.3      1.5   32.9  171.3
+  3|15|36 Z=X*Y                     1.5   34.4  172.8      1.5   34.4  172.8
+  3|16|33 Z=X+Y                     1.2   35.6  174.0      1.2   35.6  174.0
+  3|17|33 Z=X+Y                     1.2   36.8  175.2      1.2   36.8  175.2
+  3|18|33 Z=X+Y                     1.2   38.0  176.4      1.2   38.0  176.4
+  3|19|33 Z=X+Y                     1.2   39.2  177.6      1.2   39.2  177.6
+  3|20|42 Z=1/X                     2.9   42.1  180.5      2.9   42.1  180.5
+  3|21|42 Z=1/X                     2.9   45.0  183.4      2.9   45.0  183.4
+  3|22|95 End                       0.2   45.2  183.6      0.2   45.2  183.6
+  -----End Subroutine 1 ---------
+1|25|86 Do                          0.3  138.7  183.9      0.3  138.7  183.9
+  ----Subroutine 2---------------
+  3|1|85 Beginning of Subroutine    0.0    0.0  183.9      0.0    0.0  183.9
+  3|2|31 Z=X                        0.7    0.7  184.6      0.7    0.7  184.6
+  3|3|47 Z=X^Y                     14.9   15.6  199.5     14.9   15.6  199.5
+  3|4|47 Z=X^Y                     14.9   30.5  214.4     14.9   30.5  214.4
+  3|5|36 Z=X*Y                      1.5   32.0  215.9      1.5   32.0  215.9
+  3|6|36 Z=X*Y                      1.5   33.5  217.4      1.5   33.5  217.4
+  3|7|35 Z=X-Y                      1.2   34.7  218.6      1.2   34.7  218.6
+  3|8|36 Z=X*Y                      1.5   36.2  220.1      1.5   36.2  220.1
+  3|9|36 Z=X*Y                      1.5   37.7  221.6      1.5   37.7  221.6
+  3|10|33 Z=X+Y                     1.2   38.9  222.8      1.2   38.9  222.8
+  3|11|33 Z=X+Y                     1.2   40.1  224.0      1.2   40.1  224.0
+  3|12|95 End                       0.2   40.3  224.2      0.2   40.3  224.2
+  -----End Subroutine 2 ---------
+1|26|92 If time is                  0.7  139.4  224.9      0.7  139.4  224.9
+ Output Flag Set @ 126 for Array 506
+1|27|80 Set Active Storage Area     0.3  139.7  225.2      0.3  139.7  225.2
+1|28|77 Real Time                   0.2  139.9  225.4      3.8  143.5  229.0
+ Output Data 3 Values
+1|29|71 Average                     5.0  144.9  230.4     19.1  162.6  248.1
+ Output Data 4 Values
+1|30|71 Average                     2.8  147.7  233.2     10.3  172.9  258.4
+ Output Data 2 Values
+1|31|82 Standard Deviation          7.5  155.2  240.7      9.2  182.1  267.6
+ Output Data 3 Values
+1|32|71 Average                     5.0  160.2  245.7     19.1  201.2  286.7
+ Output Data 4 Values
+1|33|71 Average                     1.7  161.9  247.4      5.9  207.1  292.6
+ Output Data 1 Values
+1|34|70 Sample                      0.2  162.1  247.6      0.9  208.0  293.5
+ Output Data 1 Values
+
+Program Table 1 Execution Interval    1.000 Seconds
+
+Table 1 Estimated Total Program Execution Time in msec  247.6 w/Output  293.5
+
+Table 1 Estimated Total Final Storage Locations used per day 27360
+
+
+
+Estimated Total Final Storage Locations used per day 27360
+
+*Execution time is unknown.

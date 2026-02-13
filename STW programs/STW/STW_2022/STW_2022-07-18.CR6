@@ -1,0 +1,276 @@
+' STW Code for the CR6
+
+'Edited & Revised 2022-07-18 by EAB
+'Edited with 2022 R values 2022-07-25 by EAB
+
+''''''''''''''GENERAL INFORMATION'''''''''''''''''''''''''''''''
+'GHI measurement = SR20_4764 (R = 16.6247)
+    'Voltage channels 
+    ' White U1
+    ' Green U2
+    'Temperature channels 
+     ' Pink Red U3
+     ' Blue Gray Ground
+     ' Resistor U3 U4
+    
+
+'DNI measurement = NIP_17009E6 (R = 8.3751)
+    'Voltage channels 
+     ' Black U5
+     ' Clear U6
+     ' Green Ground
+    
+
+'DHI measurement = SR20_5218 (R = 13.3176)
+    'Voltage channels 
+    ' White U7
+    ' Green U8
+    'Temperature channels 
+     ' Pink Red U9
+     ' Gray Blue Ground
+     ' Resistor U9 U10
+     
+' Air Temperature = SE 6 (1K resistor To AG from SE E2???)
+    ' Black U11
+    ' White U12
+    ' Bare Ground
+    ' Resistor U11 Ground
+
+
+' ************************* Define Constants **************************
+' Define the location.  (Used in solar position calculation)
+Const Lat = 47.653871
+Const Lon = -122.309481
+Const Alt = 70.0
+
+' Define 5 solar position variables
+Dim SolarPosition_temp(5) As Float
+Public Solar_Azimuth
+Public Solar_Elevation
+Public Solar_Zenith
+
+' Define 9 time variables (used for solar position)
+Dim time(9)
+Alias time(1)=Year
+Alias time(2)=Month
+Alias time(3)=DOM
+Alias time(4)=Hour
+Alias time(5)=Minute
+Alias time(6)=Second
+Alias time(7)=uSecond
+Alias time(8)=WeekDay
+Alias time(9)=Day_of_Year
+
+Public GHI_mV_nonTC 'SR20(4764) NOT TEMP CORRECTED
+Public GHI_mV 'With temp corrections.
+Const GHI_R_nonTC = 16.6247 ' R_2022.5
+
+'Declare instrument public variables
+Public DNI_mV 'NIP(17009). Does not need a temp correction
+Const DNI_R = 8.3751 ' R_2022.5
+
+Public DHI_mV_nonTC 'SR20(5218) with shade ball NOT TEMP CORRECTED
+Public DHI_mV 'With temp corrections.
+Const DHI_R_nonTC = 13.3176 ' R_2022.5
+
+'Temperature correction constants for the SR20s
+Const GHI_A = -9.6642E-6
+Const GHI_B = -.1505E-4 
+Const GHI_C = 1.0042
+
+Const DHI_A = -6.8207E-6 
+Const DHI_B = .7901E-4 
+Const DHI_C = 1.0011 
+
+' Variables necessary to run temperature adjustment on SR20s
+Public GHI_BodyTemp 'Body temperature of sensor
+Public DHI_BodyTemp
+
+Public GHI_tempadjust 'Temperature adjustment
+Public DHI_tempadjust
+
+'Public GHI_R 'Temp corrected R value
+'Public DHI_R
+
+Public Rs_GHI, Rs_DHI 'Resistivity values
+
+Public Volt_GHI, Volt_DHI 'Voltage values
+
+'Other Important Constants for the Temp Adjustment
+Const Rf =10000
+
+Const SR20YSI_A = 1.0295*10^-3
+Const SR20YSI_B = 2.391*10^-4
+Const SR20YSI_C = 1.568*10^-7
+
+' Define the irradiance variables
+Public DNI_Irr 'DNI Irradiance(W/m^2) for NIP_17009
+Public GHI_Irr 'GHI Irradiance (W/m^2) for SR20_4764, temp corrected
+Public DHI_Irr 'DHI Irradiance (W/m^2) for SR20_5218 with shadeball, temp corrected
+
+Public Air_Temp 'CSI 107 air temperature
+Public Battery_volt
+Public Panel_Temp
+Public GHI_Calc
+
+' Define some units
+Units GHI_mV_nonTC = mV
+Units DHI_mV_nonTC = mV
+
+Units GHI_mV = mV
+Units DNI_mV = mV
+Units DHI_mV = mV
+
+Units DNI_Irr = W/m2
+Units GHI_Irr = W/m2
+Units DHI_Irr = W/m2
+
+Units Air_Temp = C
+
+' ****************** Define Data Tables ************************
+DataTable (STW_1min,True,-1)
+  DataInterval (0,1,Min,10)
+
+  ' Record the sun position
+'  Sample (1,Solar_Azimuth,IEEE4)
+'  Sample (1,Solar_Zenith,IEEE4)
+
+  ' Export the instrument voltage values (temp corrected for SR20s)
+  Average (1,GHI_mV,IEEE4,False)
+  Average (1,DNI_mV,IEEE4,False)
+  Average (1,DHI_mV,IEEE4,False)
+ 
+  'Export the irradiance values (temp corrected for SR20s)
+  Average (1,GHI_Irr,FP2,False)
+  Average (1,DNI_Irr,FP2,False)
+  Average (1,DHI_Irr,FP2,False)
+  
+  'Export the standard deviation of the voltage values (temp corrected for SR20s)
+  StdDev (1,GHI_mV,FP2,False)
+  StdDev (1,DNI_mV,FP2,False)
+  StdDev (1,DHI_mV,FP2,False)
+
+  'Export the temperature of the Seattle station
+  Average (1,Air_Temp,FP2,False)
+  
+  'Export the body temperature of the SR20s calculated in the temp adjustment
+  Average (1,GHI_BodyTemp,FP2,False)
+  Average (1,DHI_BodyTemp,FP2,False)
+  
+  'Export the battery voltage
+  Sample (1,battery_volt,IEEE4)
+  
+EndTable
+
+' *********************** Main Program ********************************
+BeginProg
+
+  ' When the program begins make sure to turn the power on to the radio (Set to the radio port to high)
+'  SW12 (SW12_1,1 )
+
+  ' Start the scans
+  Scan (1,Sec,0,0)
+
+    ' At 1:00 AM turn off the power
+  '  If TimeIntoInterval (60,1440,Min) Then SW12 (SW12_1,0)
+
+      ' Turn on the power at every two minute mark throughout the day  (Including at 1:02 AM)
+ '     If TimeIntoInterval (2,60,Min) Then SW12 (SW12_1,1 )
+
+      ' Record the temperature of the logger
+      PanelTemp (Panel_Temp,250)
+      ' Record the battery of the logger
+      Battery (Battery_volt)
+
+      ' Get the solar position in the middle of the minute
+      ' Start looking at time 25, Stop looking at second 30 (middle of minute)
+      'If TimeIsBetween (29,31,60,Sec) Then
+      If TimeIntoInterval (30,60,Sec) Then 
+        ' Get the current time
+        RealTime (time())
+        ' Get the current solar position, Use the logger temperture as the temperature
+        SolarPosition (SolarPosition_temp,time(),-28800,Lat,Lon,Alt,-1,Panel_Temp)
+        ' Get the sun position
+        Solar_Azimuth = SolarPosition_temp(1)
+        Solar_Elevation = SolarPosition_temp(2)
+        Solar_Zenith = 90 - Solar_Elevation
+      EndIf
+
+
+      ' Measure the irradiance values
+     VoltDiff (DNI_mV,1,mV200,u5,True,0,_60Hz,1,0)
+      DNI_Irr = DNI_mV * 1000 / DNI_R
+
+
+    ' SR20-T2 temperature measurment (Generic Half Bridge measurements Case_mV)
+    BrHalf(Volt_GHI,1,mV5000,U3,U4,1,2500,True,0,_60Hz,1.0,0.0)
+    BrHalf(Volt_DHI,1,mV5000,U9,U10,1,2500,True,0,_60Hz,1.0,0.0)
+
+    ' Convert to resistance
+    Rs_GHI = Rf * (Volt_GHI/(1-Volt_GHI))
+    Rs_DHI = Rf * (Volt_DHI/(1-Volt_DHI))
+
+    ' Compute the SR20-T2 body temperature
+    GHI_BodyTemp =1 / (SR20YSI_A + (SR20YSI_B * (LN(Rs_GHI)) + SR20YSI_C * (LN(Rs_GHI))^3)) - 273.15
+    DHI_BodyTemp =1 / (SR20YSI_A + (SR20YSI_B * (LN(Rs_DHI)) + SR20YSI_C * (LN(Rs_DHI))^3)) - 273.15
+ 
+' Make sure the body temperature is not out of range (Set to 20 if it is out of range)   
+If GHI_BodyTemp < -30 Then 
+  GHI_BodyTemp = 20
+EndIf 
+If 50 < GHI_BodyTemp Then 
+  GHI_BodyTemp = 20
+EndIf 
+
+If DHI_BodyTemp < -30 Then 
+  DHI_BodyTemp = 20
+EndIf 
+If 50 < DHI_BodyTemp Then 
+  DHI_BodyTemp = 20
+EndIf 
+
+    GHI_tempadjust = (GHI_A * GHI_BodyTemp^2 + GHI_B * GHI_BodyTemp + GHI_C)
+    DHI_tempadjust = (DHI_A * DHI_BodyTemp^2 + DHI_B * DHI_BodyTemp + DHI_C)
+    
+'    GHI_R = GHI_R_nonTC * GHI_tempadjust 
+ '   DHI_R = DHI_R_nonTC * DHI_tempadjust
+
+' From the voltage measurment the following seriew of equations are performed to compute the temperature corrected irradiance
+' Irr_TC = mv_nonTC * 1000/(R20 * TC)
+' Define mV_TC = mV_nonTC / TC
+' Then IRR_TC = mV_TC * 1000/R20
+
+    ' Voltage measurement of SR20-T2
+    VoltDiff(GHI_mV_nonTC,1,mV200,U1,True,0,_60Hz,1.0,0.0)
+    VoltDiff(DHI_mV_nonTC,1,mV200,U7,True,0,_60Hz,1.0,0.0)
+
+' Compute the temperature adjusted voltage
+' Compute the irradiance (from the temperature corrected voltage measurment)
+    GHI_mV = GHI_mV_nonTC / GHI_tempadjust
+    DHI_mV = DHI_mV_nonTC / DHI_tempadjust
+
+' Compute the irradiance (from the temperature corrected voltage measurment)
+    GHI_Irr = GHI_mV * (1000/GHI_R_nonTC)
+    DHI_Irr = DHI_mV * (1000/DHI_R_nonTC)
+
+'    ' Turn on the SR20-T2 Heater (Start at 4 AM, Turn off at 8 noon)
+'    If TimeIsBetween (4,8,24,Hr)Then
+'      SW12(1,1)
+'      SW12(2,1)
+'    Else
+'      SW12(1,0)
+'      SW12(2,0)
+'    EndIf
+
+GHI_Calc = DNI_Irr * COS(Solar_Zenith) + DHI_Irr
+
+      ' Measure the temperature
+      Therm107 (Air_Temp,1,U11,U12,0,_60Hz,1.0,0)
+
+     SetSecurity (4021,3691,7738)
+
+      'Call Output Tables
+      CallTable STW_1min
+    NextScan
+  EndProg
+

@@ -1,0 +1,596 @@
+;{CR10X}
+;
+; Seattle UW station
+; Date of last edit to program 2020-08-03
+; NOTES
+; All voltages are recorded first
+; Irradiance values calculated second
+
+; *********************************************
+; Wiring and ports
+
+; Air Temperature = SE 5 (1K resistor to AG from SE 5)
+
+; GHI measurement = PSP_17846F3 (R_2020.5 = 7.0164) (M_2020.5 = 142.523)
+; GHI Channel Diff 1 (1-2, G)
+
+; DNI measurement = NIP_17009 (R_2020 = 8.3514) (M_2020 = 119.740)
+; DNI Channel Diff 2 (3-4, G)
+
+; DHI measurement = PSP_170533F3 (R_2020.5 = 8.4176) (M_2020.5 = 118.799)
+; DHI Channel Diff 4 (7-8, G)
+
+; PIR measurement = PIR_30923F3 (M = .2577 From previous program)
+; Thermopile Channel 5 (11 - 12, G)
+; Case T SE (11 - E1)
+; Dome T SE (12 - E2)
+; PIR Wiring
+; Red 5H
+; White 5L
+; Purple - SE11 (this is the case)
+; Gray - Ground (this is the case)
+; 20 kOhm resistor - VX1 to SE11
+; Orange - SE12 (this is the dome)
+; Green - Ground (this is the dome)
+; 20 kOhm resistor - VX2 to SE12
+
+
+; *********************************************
+; EDITS
+; 2020-08-04 JTP Program developed
+;                PIR adjustments to the this program were from the Campbell base PIR program, and EUO_PIR and the program that came with the instrument from Seattle
+; *********************************************
+
+*Table 1 Program
+  01: 1         Execution Interval (seconds)
+
+;***********************************************
+; Define the constants
+
+; GHI multiplier
+1:  Z=F x 10^n (P30)
+ 1: 142.523  F
+ 2: 00       n, Exponent of 10
+ 3: 1        Z Loc [ GHI_M     ]
+
+; DNI multiplier
+2:  Z=F x 10^n (P30)
+ 1: 119.740  F
+ 2: 00       n, Exponent of 10
+ 3: 2        Z Loc [ DNI_M     ]
+
+; DHI multiplier
+3:  Z=F x 10^n (P30)
+ 1: 118.799  F
+ 2: 00       n, Exponent of 10
+ 3: 3        Z Loc [ DHI_M     ]
+
+; Define the PIR_C_1 (Multiplier of PIR)
+; .2577 * 1000 = 257.7 (convert millivolts to microvolts)
+4:  Z=F x 10^n (P30)
+ 1: 257.7    F
+ 2: 0        n, Exponent of 10
+ 3: 4        Z Loc [ PIR_M     ]
+
+; Define the PIR_C_2, emissivity of PIR
+5:  Z=F x 10^n (P30)
+ 1: 1        F
+ 2: 00       n, Exponent of 10
+ 3: 32       Z Loc [ PIR_C_2   ]
+
+; Define the PIR_C_3 (Not sure why this is -4 but it was in the previous program
+6:  Z=F x 10^n (P30)
+ 1: -4       F
+ 2: 00       n, Exponent of 10
+ 3: 33       Z Loc [ PIR_C_3   ]
+
+; Load PIR temperature correction constants a, b, c in input locations
+7:  Z=F x 10^n (P30)
+ 1: 1.0295   F
+ 2: -3       n, Exponent of 10
+ 3: 34       Z Loc [ PIR_C_A   ]
+
+8:  Z=F x 10^n (P30)
+ 1: 2.391    F
+ 2: -4       n, Exponent of 10
+ 3: 35       Z Loc [ PIR_C_B   ]
+
+9:  Z=F x 10^n (P30)
+ 1: 1.568    F
+ 2: -7       n, Exponent of 10
+ 3: 36       Z Loc [ PIR_C_C   ]
+
+; Define stephan boltaman constant
+10:  Z=F x 10^n (P30)
+ 1: 5.6704   F
+ 2: -8    -- n, Exponent of 10
+ 3: 37       Z Loc [ sigma     ]
+
+; Load Number 4 into input location (used to rais temperature to the fourth power)
+11:  Z=F x 10^n (P30)
+ 1: 4        F
+ 2: 0        n, Exponent of 10
+ 3: 50       Z Loc [ Power4    ]
+
+; *********************************************
+; Make voltage measurements
+
+; GHI measurement
+12:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 1        DIFF Channel
+ 4: 11       Loc [ GHI_mV    ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; DNI measurement
+13:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 2        DIFF Channel
+ 4: 12       Loc [ DNI_mV    ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; DHI measurement
+14:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 23       25 mV 60 Hz Rejection Range
+ 3: 4        DIFF Channel
+ 4: 13       Loc [ DHI_mV    ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; PIR measurements
+; PIR thermopile measurement
+15:  Volt (Diff) (P2)
+ 1: 1        Reps
+ 2: 1        2.5 mV Slow Range
+ 3: 5        DIFF Channel
+ 4: 14       Loc [ PIR_Net_V ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; PIR case thermistor measurement
+; Technically this is a voltage measurment using a 1/2 bridge. But this is immediately converted to a resistance in subroutine 1, and the ressitance is output to the file
+16:  AC Half Bridge (P5)
+ 1: 1        Reps
+ 2: 15       2500 mV Fast Range
+ 3: 11       SE Channel
+ 4: 1        Excite all reps w/Exchan 1
+ 5: 2500     mV Excitation
+ 6: 15       Loc [ PIR_Cas_R ]
+ 7: 1.0      Multiplier
+ 8: 0.0      Offset
+
+; PIR Dome thermistor measurement
+17:  AC Half Bridge (P5)
+ 1: 1        Reps
+ 2: 15       2500 mV Fast Range
+ 3: 12       SE Channel
+ 4: 2        Excite all reps w/Exchan 2
+ 5: 2500     mV Excitation
+ 6: 16       Loc [ PIR_Dom_R ]
+ 7: 1.0      Multiplier
+ 8: 0.0      Offset
+
+; Measure the Air temperature
+18:  Temp (107) (P11)
+ 1: 1        Reps
+ 2: 5        SE Channel
+ 3: 3        Excite all reps w/E3
+ 4: 28       Loc [ AirTemp_C ]
+ 5: 1.0      Multiplier
+ 6: 0.0      Offset
+
+; Measure the Battery Voltage
+19:  Batt Voltage (P10)
+ 1: 29       Loc [ Batt_V    ]
+
+; ***********************************************
+; Compute irradiance values (I = V * M)
+
+; Compute GHI irradiance
+20:  Z=X*Y (P36)
+ 1: 1        X Loc [ GHI_M     ]
+ 2: 11       Y Loc [ GHI_mV    ]
+ 3: 21       Z Loc [ GHI_I     ]
+
+; Compute DNI irradiance
+21:  Z=X*Y (P36)
+ 1: 2        X Loc [ DNI_M     ]
+ 2: 12       Y Loc [ DNI_mV    ]
+ 3: 22       Z Loc [ DNI_I     ]
+
+; Compute DHI irradiance
+22:  Z=X*Y (P36)
+ 1: 3        X Loc [ DHI_M     ]
+ 2: 13       Y Loc [ DHI_mV    ]
+ 3: 23       Z Loc [ DHI_I     ]
+
+; Compute the PIR_Net irradiance
+23:  Z=X*Y (P36)
+ 1: 4        X Loc [ PIR_M     ]
+ 2: 14       Y Loc [ PIR_Net_V ]
+ 3: 24       Z Loc [ PIR_Net_I ]
+
+; Call subroutine 1,
+; Calculates PIR case and dome temperatures
+; 1/T = a + b(LnR) + c (LnR)^3
+; Outputs PIR_DomeT, and PIR_CasT
+24:  Do (P86)
+ 1: 1        Call Subroutine 1
+
+; Call subroutine 2, Used to compute the incoming PIR irradiance
+25:  Do (P86)
+ 1: 2        Call Subroutine 2
+
+
+; **********************************************
+; Output data to the one minute table
+
+; At the start of every minute average the results
+26:  If time is (P92)
+ 1: 0        Minutes (Seconds --) into a
+ 2: 1        Interval (same units as above)
+ 3: 10       Set Output Flag High (Flag 0) ;
+
+; Assign the array id number
+27:  Set Active Storage Area (P80)^17192
+ 1: 1        Final Storage Area 1
+ 2: 506      Array ID
+
+; Output the Datetime stamp (3 columns)
+28:  Real Time (P77)^26476
+ 1: 1220     Year,Day,Hour/Minute (midnight = 2400)
+
+; Output the GHI_mV, DNI_mV, DHI_mV, PIR_Net_V
+29:  Average (P71)^22901
+ 1: 4        Reps
+ 2: 11       Loc [ GHI_mV    ]
+
+; Output the PIR_Case_kiloOhm resistance and PIR_Dome_kiloOhm resistance (Note the resistance is out of range (greater than 6999, so divide by 1000)
+30:  Average (P71)^18390
+ 1: 2        Reps
+ 2: 17       Loc [ PIR_CaskR ]
+
+; Output the stadard deviation of GHI_mV, DNI_mV, DHI_mV
+31:  Standard Deviation (P82)^4703
+ 1: 3        Reps
+ 2: 11       Sample Loc [ GHI_mV    ]
+
+; Output the PIR outputs (PIR_Net_I, PIR_In_I, PIR_CaseT, PIR_DomeT)
+32:  Average (P71)^4030
+ 1: 4        Reps
+ 2: 24       Loc [ PIR_Net_I ]
+
+33:  Average (P71)^1653
+ 1: 1        Reps
+ 2: 28       Loc [ AirTemp_C ]
+
+
+34:  Sample (P70)^4293
+ 1: 1        Reps
+ 2: 29       Loc [ Batt_V    ]
+
+*Table 2 Program
+  02: 0.0000    Execution Interval (seconds)
+
+*Table 3 Subroutines
+
+
+; **************************************************************
+1:  Beginning of Subroutine (P85)
+ 1: 1        Subroutine 1
+
+; Equation to convert YSI 10K thermistor resistance to temperature
+; in degrees K
+; R_dome = 20,000 * dome_V/(1 - dome_V)
+; 1/T = a + b(LnR) + c (LnR)^3
+
+; Coefficents used in equation above
+; a = 0.0010295 = ConstA
+; b = 0.0002391 = ConstB
+; c = 1.568E-7 = ConstC
+
+; Calculate resistance from P5 instruction (Case Thermistor measurement)
+; This overwrites the the voltage measurement
+; A bridge with a 20,000 Ohm resistor
+     2:  BR Transform Rf[X/(1-X)] (P59)
+      1: 1        Reps
+      2: 15       Loc [ PIR_Cas_R ]
+      3: 20000    Multiplier (Rf)
+
+     3:  BR Transform Rf[X/(1-X)] (P59)
+      1: 1        Reps
+      2: 16       Loc [ PIR_Dom_R ]
+      3: 20000    Multiplier (Rf)
+
+; Compute the kiloOhm resistance (the resistance is Ohms is too large to output to the file, divide by 1000 to convert it to kiloOhm
+     4:  Z=X*F (P37)
+      1: 15       X Loc [ PIR_Cas_R ]
+      2: .001     F
+      3: 17       Z Loc [ PIR_CaskR ]
+
+     5:  Z=X*F (P37)
+      1: 16       X Loc [ PIR_Dom_R ]
+      2: .001     F
+      3: 18       Z Loc [ PIR_DomkR ]
+
+; Convert resistance of thermistor to natural log of resistance
+     6:  Z=LN(X) (P40)
+      1: 15       X Loc [ PIR_Cas_R ]
+      2: 40       Z Loc [ LnR_Case  ]
+
+     7:  Z=LN(X) (P40)
+      1: 16       X Loc [ PIR_Dom_R ]
+      2: 41       Z Loc [ LnR_Dome  ]
+
+; Mutiply ConstB with Natural log of resistance
+; Store result in "Bterm, BLn_res"
+     8:  Z=X*Y (P36)
+      1: 40       X Loc [ LnR_Case  ]
+      2: 35       Y Loc [ PIR_C_B   ]
+      3: 42       Z Loc [ BLnR_Case ]
+
+     9:  Z=X*Y (P36)
+      1: 41       X Loc [ LnR_Dome  ]
+      2: 35       Y Loc [ PIR_C_B   ]
+      3: 43       Z Loc [ BLnR_Dome ]
+
+; Square the natural log of resistance
+     10:  Z=X*Y (P36)
+      1: 40       X Loc [ LnR_Case  ]
+      2: 40       Y Loc [ LnR_Case  ]
+      3: 44       Z Loc [ LnR_Case2 ]
+
+     11:  Z=X*Y (P36)
+      1: 41       X Loc [ LnR_Dome  ]
+      2: 41       Y Loc [ LnR_Dome  ]
+      3: 45       Z Loc [ LnR_Dome2 ]
+
+; Cube the natural log of resistance
+     12:  Z=X*Y (P36)
+      1: 44       X Loc [ LnR_Case2 ]
+      2: 40       Y Loc [ LnR_Case  ]
+      3: 46       Z Loc [ LnR_Case3 ]
+
+     13:  Z=X*Y (P36)
+      1: 45       X Loc [ LnR_Dome2 ]
+      2: 41       Y Loc [ LnR_Dome  ]
+      3: 47       Z Loc [ LnR_Dome3 ]
+
+; Multiply constant C with natural log of resitance raised to the third power
+
+     14:  Z=X*Y (P36)
+      1: 36       X Loc [ PIR_C_C   ]
+      2: 46       Y Loc [ LnR_Case3 ]
+      3: 48       Z Loc [ CLnR3_Cas ]
+
+     15:  Z=X*Y (P36)
+      1: 36       X Loc [ PIR_C_C   ]
+      2: 47       Y Loc [ LnR_Dome3 ]
+      3: 49       Z Loc [ CLnR3_Dom ]
+
+; Add A term to B term natural log of resistance,
+; Store in location case temp
+
+     16:  Z=X+Y (P33)
+      1: 34       X Loc [ PIR_C_A   ]
+      2: 42       Y Loc [ BLnR_Case ]
+      3: 26       Z Loc [ PIR_CaseT ]
+
+     17:  Z=X+Y (P33)
+      1: 34       X Loc [ PIR_C_A   ]
+      2: 43       Y Loc [ BLnR_Dome ]
+      3: 27       Z Loc [ PIR_DomeT ]
+
+; Add C term to A and B term
+     18:  Z=X+Y (P33)
+      1: 26       X Loc [ PIR_CaseT ]
+      2: 48       Y Loc [ CLnR3_Cas ]
+      3: 26       Z Loc [ PIR_CaseT ]
+
+     19:  Z=X+Y (P33)
+      1: 27       X Loc [ PIR_DomeT ]
+      2: 49       Y Loc [ CLnR3_Dom ]
+      3: 27       Z Loc [ PIR_DomeT ]
+
+; Invert A plus B plus C term
+; Result is temperature in degrees Kelvin
+
+     20:  Z=1/X (P42)
+      1: 26       X Loc [ PIR_CaseT ]
+      2: 26       Z Loc [ PIR_CaseT ]
+
+     21:  Z=1/X (P42)
+      1: 27       X Loc [ PIR_DomeT ]
+      2: 27       Z Loc [ PIR_DomeT ]
+
+22:  End (P95)
+
+
+;******************************************************
+23:  Beginning of Subroutine (P85)
+ 1: 2        Subroutine 2
+
+; Apply case thermistor correction to PIR thermopile output
+; https://www.arm.gov/publications/proceedings/conf16/extended_abs/stoffel_t.pdf for an overview of PIR corrections
+; PIR_adjusted = (k1 * PIR_mV) + (k2 sigma Tc^4) + (k3 sigma (Tc^4 - Td^4))
+; PIR_adjusted = incoming radiation from sun + outgoing radiation from case + radiation from dome back down
+; The third term should be small
+; sigma = 5.6704*10^-8, stephan boltaman constant
+; k1 = .2577 ; responsivity of the thermopyle, NOTE: after PIR repair in 2011, This was the note in the previous program
+; k2 = 1 ; case emisivity,  This is from the previous program
+; k3 = -4 ; This is from the previous program
+; The measured voltage of the PIR is really a measure of the net irradiance
+; The following calculation computes the incoming (downwelling) irradiance
+; net = in - out + in(from dome)
+
+; Define term 1 as the net irradiance
+     24:  Z=X (P31)
+      1: 24       X Loc [ PIR_Net_I ]
+      2: 54       Z Loc [ PIR_term1 ]
+
+; Raise case temperature to the fourth power
+     25:  Z=X^Y (P47)
+      1: 26       X Loc [ PIR_CaseT ]
+      2: 50       Y Loc [ Power4    ]
+      3: 52       Z Loc [ PIR_CasT4 ]
+
+; Raise dome temperature to the fourth power
+     26:  Z=X^Y (P47)
+      1: 27       X Loc [ PIR_DomeT ]
+      2: 50       Y Loc [ Power4    ]
+      3: 53       Z Loc [ PIR_DomT4 ]
+
+; Compute PIR_term2 (outgoing irradiance from sensor)
+     27:  Z=X*Y (P36)
+      1: 37       X Loc [ sigma     ]
+      2: 32       Y Loc [ PIR_C_2   ]
+      3: 55       Z Loc [ PIR_term2 ]
+
+     28:  Z=X*Y (P36)
+      1: 55       X Loc [ PIR_term2 ]
+      2: 52       Y Loc [ PIR_CasT4 ]
+      3: 55       Z Loc [ PIR_term2 ]
+
+; Compute PIR_term3 (irradiance coming back from dome)
+     29:  Z=X-Y (P35)
+      1: 53       X Loc [ PIR_DomT4 ]
+      2: 52       Y Loc [ PIR_CasT4 ]
+      3: 56       Z Loc [ PIR_term3 ]
+
+     30:  Z=X*Y (P36)
+      1: 56       X Loc [ PIR_term3 ]
+      2: 33       Y Loc [ PIR_C_3   ]
+      3: 56       Z Loc [ PIR_term3 ]
+
+     31:  Z=X*Y (P36)
+      1: 37       X Loc [ sigma     ]
+      2: 56       Y Loc [ PIR_term3 ]
+      3: 56       Z Loc [ PIR_term3 ]
+
+; Calculate the radiation in after the case and dome temperature corrections
+; incoming irradce = net - out + in(from dome)
+     32:  Z=X+Y (P33)
+      1: 54       X Loc [ PIR_term1 ]
+      2: 55       Y Loc [ PIR_term2 ]
+      3: 25       Z Loc [ PIR_In_I  ]
+
+     33:  Z=X+Y (P33)
+      1: 25       X Loc [ PIR_In_I  ]
+      2: 56       Y Loc [ PIR_term3 ]
+      3: 25       Z Loc [ PIR_In_I  ]
+
+; End Subroutine 2
+34:  End (P95)
+
+
+End Program
+
+
+
+
+
+
+
+
+
+-Input Locations-
+1 GHI_M     1 1 1
+2 DNI_M     1 1 1
+3 DHI_M     1 1 1
+4 PIR_M     1 1 1
+5 _________ 1 0 0
+6 _________ 1 0 0
+7 _________ 1 0 0
+8 _________ 1 0 0
+9 _________ 0 0 0
+10 _________ 0 0 0
+11 GHI_mV    5 3 1
+12 DNI_mV    9 3 1
+13 DHI_mV    25 3 1
+14 PIR_Net_V 17 1 1
+15 PIR_Cas_R 1 1 2
+16 PIR_Dom_R 1 1 2
+17 PIR_CaskR 1 1 1
+18 PIR_DomkR 1 1 1
+19 _________ 0 0 0
+20 _________ 0 0 0
+21 GHI_I     1 0 1
+22 DNI_I     1 0 1
+23 DHI_I     1 0 1
+24 PIR_Net_I 1 2 1
+25 PIR_In_I  1 2 2
+26 PIR_CaseT 1 4 3
+27 PIR_DomeT 1 4 3
+28 AirTemp_C 1 1 2
+29 Batt_V    1 1 1
+30 _________ 0 0 0
+31 _________ 1 0 0
+32 PIR_C_2   1 1 1
+33 PIR_C_3   1 1 1
+34 PIR_C_A   1 2 1
+35 PIR_C_B   1 2 1
+36 PIR_C_C   1 2 1
+37 sigma     1 2 1
+38 _________ 1 0 0
+39 _________ 1 0 0
+40 LnR_Case  1 4 1
+41 LnR_Dome  1 4 1
+42 BLnR_Case 1 1 1
+43 BLnR_Dome 1 1 1
+44 LnR_Case2 1 1 1
+45 LnR_Dome2 1 1 1
+46 LnR_Case3 1 1 1
+47 LnR_Dome3 1 1 1
+48 CLnR3_Cas 1 1 1
+49 CLnR3_Dom 1 1 1
+50 Power4    1 2 1
+51 _________ 0 0 0
+52 PIR_CasT4 1 2 1
+53 PIR_DomT4 1 1 1
+54 PIR_term1 1 1 1
+55 PIR_term2 1 2 2
+56 PIR_term3 1 3 3
+57 _________ 1 0 0
+58 _________ 1 0 0
+-Program Security-
+4021
+3691
+7738
+-Mode 4-
+-Final Storage Area 2-
+0
+-CR10X ID-
+0
+-CR10X Power Up-
+3
+-CR10X Compile Setting-
+3
+-CR10X RS-232 Setting-
+-1
+-DLD File Labels-
+0
+-Final Storage Labels-
+0,506,17192
+1,Year_RTM,26476
+1,Day_RTM
+1,Hour_Minute_RTM
+2,GHI_mV_AVG~11,22901
+2,DNI_mV_AVG~12
+2,DHI_mV_AVG~13
+2,PIR_Net_V_AVG~14
+3,GHI_mV_STD~11,4703
+3,DNI_mV_STD~12
+3,DHI_mV_STD~13
+4,AirTemp_C_AVG~28,1653
+5,Batt_V~29,4293
+6,PIR_Net_I_AVG~24,4030
+6,PIR_In_I_AVG~25
+6,PIR_CaseT_AVG~26
+6,PIR_DomeT_AVG~27
+7,PIR_CaskR_AVG~17,18390
+7,PIR_DomkR_AVG~18

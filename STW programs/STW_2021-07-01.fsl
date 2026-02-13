@@ -1,0 +1,25 @@
+Final Storage Label File for:  STW_2021-07-01.csi
+Date:  7/2/2021
+Time:  12:49:40
+
+506 Output_Table   1.00 Min
+1 506 L
+2 Year_RTM  L
+3 Day_RTM  L
+4 Hour_Minute_RTM  L
+5 GHI_mV_AVG  L
+6 DNI_mV_AVG  L
+7 DHI_mV_AVG  L
+8 GHI_I_AVG  L
+9 DNI_I_AVG  L
+10 DHI_I_AVG  L
+11 GHI_mV_STD  L
+12 DNI_mV_STD  L
+13 DHI_mV_STD  L
+14 AirTemp_C_AVG  L
+15 GHI_T_AVG  L
+16 DHI_T_AVG  L
+17 Batt_V  L
+
+
+Estimated Total Final Storage Locations used per day 24480
