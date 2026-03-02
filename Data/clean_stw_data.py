@@ -41,6 +41,7 @@ from __future__ import annotations
 import csv
 import sqlite3
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -504,6 +505,45 @@ def write_missing_timestamps_log(log_path: Path, missing_rows: Iterable[tuple[in
             writer.writerow([year, day, ranges_text])
 
 
+def format_hhmm_token(hhmm: int) -> str:
+    """Render an HHMM integer as ``HH:MM`` (with 2400 shown as 24:00)."""
+    if hhmm == 2400:
+        return "24:00"
+    text = str(hhmm).zfill(4)
+    return f"{text[:2]}:{text[2:]}"
+
+
+def write_formatted_missing_timestamps(log_path: Path, missing_rows: Iterable[tuple[int, int, str]]) -> None:
+    """Write a human-readable missing-timestamp report.
+
+    Each compressed HHMM range is expanded into one line in the form:
+
+        YYYY/MM/DD HH:MM - HH:MM
+    """
+    lines: list[str] = []
+    for year, day_of_year, ranges_text in missing_rows:
+        day_date = date(year, 1, 1) + timedelta(days=day_of_year - 1)
+        date_text = day_date.strftime("%Y/%m/%d")
+        for token in ranges_text.split(";"):
+            item = token.strip()
+            if not item:
+                continue
+            if "-" in item:
+                start_text, end_text = item.split("-", 1)
+            else:
+                start_text = item
+                end_text = item
+            start = parse_int(start_text)
+            end = parse_int(end_text)
+            if start is None or end is None:
+                continue
+            if not (is_valid_hhmm(start) and is_valid_hhmm(end)):
+                continue
+            lines.append(f"{date_text} {format_hhmm_token(start)} - {format_hhmm_token(end)}")
+
+    log_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
 def log_missing_timestamps(
     conn: sqlite3.Connection,
     years: list[int],
@@ -742,11 +782,13 @@ def main() -> None:
     combined_file = COMBINED_DIR / "stw_combined_cleaned.csv"
     combined_rows = write_scope_file(conn, combined_years, combined_file)
     combined_missing_log_path = MISSING_COMBINED_DIR / "missing_timestamps_combined.csv"
+    combined_missing_formatted_path = MISSING_COMBINED_DIR / "missing_timestamps_combined_formatted.txt"
     combined_missing, combined_missing_rows = log_missing_timestamps(
         conn,
         combined_years,
         combined_missing_log_path,
     )
+    write_formatted_missing_timestamps(combined_missing_formatted_path, combined_missing_rows)
     combined_rows_added = merge_missing_rows_into_csv(combined_file, combined_missing_rows)
     combined_rows += combined_rows_added
     print(
