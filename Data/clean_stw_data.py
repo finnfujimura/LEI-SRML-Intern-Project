@@ -15,7 +15,7 @@ The cleaning pipeline (run via ``main()``) performs eight steps:
      removing exact duplicates (rows identical from column 2 onward).
   3. Write one sorted CSV per year to ``cleaned_output/yearly_cleaned/``.
   4. For each year, compare observed timestamps against the full 1,440
-     valid minute-of-day HHMM values and log gaps to ``missing_logs/yearly/``.
+     valid minute-of-day HHMM values and merge placeholder rows for gaps.
   5. Write a combined CSV covering all years. Merge placeholder rows
      (``NaN`` measurements) for every missing timestamp so the file has no
      gaps.
@@ -52,7 +52,6 @@ OUT_DIR = BASE_DIR / "cleaned_output"               # root of all generated outp
 YEARLY_CLEANED_DIR = OUT_DIR / "yearly_cleaned"     # one CSV per year
 COMBINED_DIR = OUT_DIR / "combined"                 # all-years merged CSV
 MISSING_DIR = OUT_DIR / "missing_logs"
-MISSING_YEARLY_DIR = MISSING_DIR / "yearly"         # gap logs per year
 MISSING_COMBINED_DIR = MISSING_DIR / "combined"     # gap log for combined file
 REPORTS_DIR = OUT_DIR / "reports"                    # summary & recheck reports
 WORK_DB = OUT_DIR / "_stw_work.sqlite3"             # temp DB (deleted at end)
@@ -365,12 +364,15 @@ def parse_key_from_line(line: str) -> tuple[int, int, int] | None:
     return (year, day, hhmm)
 
 
-def merge_missing_rows_into_csv(data_csv_path: Path, missing_log_path: Path) -> int:
+def merge_missing_rows_into_csv(
+    data_csv_path: Path,
+    missing_rows: Iterable[tuple[int, int, str]],
+) -> int:
     """Insert placeholder rows for every missing timestamp into a cleaned CSV.
 
-    Reads the missing-timestamp log (produced by ``log_missing_timestamps``),
-    builds ``NaN``-padded rows for each gap, and merge-sorts them into the
-    existing data file so that the output remains in (year, day, hhmm) order.
+    Reads compressed missing ranges from *missing_rows*, builds ``NaN``-padded
+    rows for each gap, and merge-sorts them into the existing data file so that
+    the output remains in (year, day, hhmm) order.
 
     The merge is done via a temporary file that atomically replaces the
     original.
@@ -378,28 +380,23 @@ def merge_missing_rows_into_csv(data_csv_path: Path, missing_log_path: Path) -> 
     Returns:
         The number of placeholder rows added.
     """
-    if not data_csv_path.exists() or not missing_log_path.exists():
+    if not data_csv_path.exists():
         return 0
 
     # Figure out how many measurement columns to pad with NaN.
     max_cols = max_columns_in_csv(data_csv_path)
     placeholder_count = max(0, max_cols - 3)  # 3 key cols: year, day, hhmm
 
-    # Build the list of synthetic rows from the missing-timestamp log.
+    # Build the list of synthetic rows from the compressed missing ranges.
     synthetic_rows: list[tuple[int, int, int, str]] = []
-    with missing_log_path.open("r", encoding="utf-8", errors="replace", newline="") as missing_file:
-        reader = csv.DictReader(missing_file)
-        for row in reader:
-            year = parse_int(row.get("year", ""))
-            day = parse_int(row.get("day_of_year", ""))
-            ranges_text = (row.get("missing_hhmm_ranges", "") or "").strip()
-            if year is None or day is None or not ranges_text:
-                continue
-            for hhmm in expand_hhmm_ranges(ranges_text):
-                values = [str(year), str(day), str(hhmm)]
-                if placeholder_count:
-                    values.extend(["NaN"] * placeholder_count)
-                synthetic_rows.append((year, day, hhmm, ",".join(values)))
+    for year, day, ranges_text in missing_rows:
+        if not ranges_text:
+            continue
+        for hhmm in expand_hhmm_ranges(ranges_text):
+            values = [str(year), str(day), str(hhmm)]
+            if placeholder_count:
+                values.extend(["NaN"] * placeholder_count)
+            synthetic_rows.append((year, day, hhmm, ",".join(values)))
 
     if not synthetic_rows:
         return 0
@@ -498,17 +495,27 @@ def select_combined_years(years: list[int], year_counts: dict[int, int]) -> list
 # Missing-timestamp detection
 # ---------------------------------------------------------------------------
 
+def write_missing_timestamps_log(log_path: Path, missing_rows: Iterable[tuple[int, int, str]]) -> None:
+    """Persist compressed missing ranges to a CSV log."""
+    with log_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["year", "day_of_year", "missing_hhmm_ranges"])
+        for year, day, ranges_text in missing_rows:
+            writer.writerow([year, day, ranges_text])
+
+
 def log_missing_timestamps(
     conn: sqlite3.Connection,
     years: list[int],
-    log_path: Path,
-) -> MissingSummary:
-    """Scan the database for gaps in minute-resolution coverage and write a log.
+    log_path: Path | None = None,
+) -> tuple[MissingSummary, list[tuple[int, int, str]]]:
+    """Scan the database for gaps in minute-resolution coverage.
 
     For every (year, day) group the function builds the set of observed HHMM
     timestamps and compares it against the full 1,440-value reference list.
-    Any values that are absent are written to *log_path* as compressed HHMM
-    ranges (see ``compress_hhmm_ranges``).
+    Any values that are absent are captured as compressed HHMM ranges (see
+    ``compress_hhmm_ranges``). If *log_path* is provided, those ranges are also
+    written to disk as a CSV log.
 
     Special cases:
       - **First-day grace**: timestamps before the first observed reading on
@@ -519,7 +526,8 @@ def log_missing_timestamps(
         (6 and 7) are logged as fully missing (all 1,440 timestamps).
 
     Returns:
-        A ``MissingSummary`` with aggregate gap statistics.
+        A ``(summary, missing_rows)`` tuple where ``missing_rows`` contains
+        ``(year, day_of_year, compressed_ranges)`` entries.
     """
     placeholders = ",".join("?" for _ in years)
     query = (
@@ -529,64 +537,64 @@ def log_missing_timestamps(
     )
 
     summary = MissingSummary()
+    missing_rows: list[tuple[int, int, str]] = []
     current_key: tuple[int, int] | None = None  # (year, day) being accumulated
     times_seen: set[int] = set()                 # valid HHMM values seen so far
     out_of_range = 0                             # invalid HHMM count in group
     first_valid_key: tuple[int, int] | None = None   # used for first-day grace
     first_valid_time: int | None = None
 
-    with log_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["year", "day_of_year", "missing_hhmm_ranges"])
-
-        def flush_group() -> None:
-            """Finish processing the current (year, day) group."""
-            nonlocal current_key, times_seen, out_of_range
-            if current_key is None:
-                return
-            year, day = current_key
-            missing = [t for t in VALID_HHMM_TIMES if t not in times_seen]
-            # First-day grace: don't flag timestamps before the station started.
-            if current_key == first_valid_key and first_valid_time is not None:
-                missing = [t for t in missing if t >= first_valid_time]
-            summary.days_total += 1
-            summary.missing_timestamps_total += len(missing)
-            summary.out_of_range_timestamps += out_of_range
-            if missing:
-                summary.days_with_missing += 1
-                writer.writerow([year, day, compress_hhmm_ranges(missing)])
-            times_seen = set()
-            out_of_range = 0
-
-        def log_fully_missing_day(year: int, day: int) -> None:
-            """Record a day with zero observations (all 1,440 timestamps missing)."""
-            summary.days_total += 1
+    def flush_group() -> None:
+        """Finish processing the current (year, day) group."""
+        nonlocal current_key, times_seen, out_of_range
+        if current_key is None:
+            return
+        year, day = current_key
+        missing = [t for t in VALID_HHMM_TIMES if t not in times_seen]
+        # First-day grace: don't flag timestamps before the station started.
+        if current_key == first_valid_key and first_valid_time is not None:
+            missing = [t for t in missing if t >= first_valid_time]
+        summary.days_total += 1
+        summary.missing_timestamps_total += len(missing)
+        summary.out_of_range_timestamps += out_of_range
+        if missing:
             summary.days_with_missing += 1
-            summary.missing_timestamps_total += len(VALID_HHMM_TIMES)
-            writer.writerow([year, day, "1-2400"])
+            missing_rows.append((year, day, compress_hhmm_ranges(missing)))
+        times_seen = set()
+        out_of_range = 0
 
-        for year, day, time in conn.execute(query, years):
-            key = (year, day)
-            if current_key != key:
-                previous_key = current_key
-                flush_group()
-                # Fill in entirely missing days between consecutive observed days.
-                if previous_key is not None:
-                    prev_year, prev_day = previous_key
-                    if year == prev_year and day > prev_day + 1:
-                        for missing_day in range(prev_day + 1, day):
-                            log_fully_missing_day(year, missing_day)
-                current_key = key
-            if is_valid_hhmm(time):
-                if first_valid_key is None:
-                    first_valid_key = key
-                    first_valid_time = time
-                times_seen.add(time)
-            else:
-                out_of_range += 1
-        flush_group()
+    def log_fully_missing_day(year: int, day: int) -> None:
+        """Record a day with zero observations (all 1,440 timestamps missing)."""
+        summary.days_total += 1
+        summary.days_with_missing += 1
+        summary.missing_timestamps_total += len(VALID_HHMM_TIMES)
+        missing_rows.append((year, day, "1-2400"))
 
-    return summary
+    for year, day, time in conn.execute(query, years):
+        key = (year, day)
+        if current_key != key:
+            previous_key = current_key
+            flush_group()
+            # Fill in entirely missing days between consecutive observed days.
+            if previous_key is not None:
+                prev_year, prev_day = previous_key
+                if year == prev_year and day > prev_day + 1:
+                    for missing_day in range(prev_day + 1, day):
+                        log_fully_missing_day(year, missing_day)
+            current_key = key
+        if is_valid_hhmm(time):
+            if first_valid_key is None:
+                first_valid_key = key
+                first_valid_time = time
+            times_seen.add(time)
+        else:
+            out_of_range += 1
+    flush_group()
+
+    if log_path is not None:
+        write_missing_timestamps_log(log_path, missing_rows)
+
+    return summary, missing_rows
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +632,7 @@ def write_summary_report(
         [
             f"Combined years: {', '.join(map(str, combined_years))}",
             f"Combined rows written: {combined_rows}",
-            f"Rows merged from missing logs (all yearly files): {yearly_rows_added}",
+            f"Rows merged into yearly files from detected gaps: {yearly_rows_added}",
             f"Rows merged from missing logs (combined file): {combined_rows_added}",
             f"Combined day groups checked: {combined_missing.days_total}",
             f"Combined days with missing timestamps: {combined_missing.days_with_missing}",
@@ -649,7 +657,7 @@ def recheck_combined_file(combined_file: Path, missing_combined_dir: Path) -> tu
     stats = ingest_files(conn, [combined_file], drop_first_col=False)
     unique_rows = conn.execute("SELECT COUNT(*) FROM dedup_rows;").fetchone()[0]
     years = get_years(conn)
-    missing = log_missing_timestamps(
+    missing, _ = log_missing_timestamps(
         conn,
         years,
         missing_combined_dir / "missing_timestamps_combined_recheck.csv",
@@ -670,7 +678,6 @@ def main() -> None:
     OUT_DIR.mkdir(exist_ok=True)
     YEARLY_CLEANED_DIR.mkdir(parents=True, exist_ok=True)
     COMBINED_DIR.mkdir(parents=True, exist_ok=True)
-    MISSING_YEARLY_DIR.mkdir(parents=True, exist_ok=True)
     MISSING_COMBINED_DIR.mkdir(parents=True, exist_ok=True)
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -698,14 +705,12 @@ def main() -> None:
     print("[4/8] Looking for missing timestamps in yearly files...", flush=True)
     yearly_rows_added = 0
     for year in years:
-        missing_log_path = MISSING_YEARLY_DIR / f"missing_timestamps_{year}.csv"
-        yearly_missing = log_missing_timestamps(
+        yearly_missing, yearly_missing_rows = log_missing_timestamps(
             conn,
             [year],
-            missing_log_path,
         )
         yearly_file_path = YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv"
-        added = merge_missing_rows_into_csv(yearly_file_path, missing_log_path)
+        added = merge_missing_rows_into_csv(yearly_file_path, yearly_missing_rows)
         yearly_rows_added += added
         print(
             f"Year {year}: {yearly_missing.missing_timestamps_total} timestamps missing; {added} rows merged.",
@@ -717,12 +722,12 @@ def main() -> None:
     combined_file = COMBINED_DIR / "stw_combined_cleaned.csv"
     combined_rows = write_scope_file(conn, combined_years, combined_file)
     combined_missing_log_path = MISSING_COMBINED_DIR / "missing_timestamps_combined.csv"
-    combined_missing = log_missing_timestamps(
+    combined_missing, combined_missing_rows = log_missing_timestamps(
         conn,
         combined_years,
         combined_missing_log_path,
     )
-    combined_rows_added = merge_missing_rows_into_csv(combined_file, combined_missing_log_path)
+    combined_rows_added = merge_missing_rows_into_csv(combined_file, combined_missing_rows)
     combined_rows += combined_rows_added
     print(
         f"Combined {combined_years[0]}-{combined_years[-1]}: {combined_missing.missing_timestamps_total} timestamps missing; "
