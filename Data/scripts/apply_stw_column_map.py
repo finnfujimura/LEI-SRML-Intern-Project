@@ -27,10 +27,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_INPUT = BASE_DIR / "cleaned_output" / "combined" / "stw_combined_cleaned.csv"
-DEFAULT_MAP = BASE_DIR.parent / "STW programs" / "column_map.csv"
-DEFAULT_OUTPUT = BASE_DIR / "cleaned_output" / "combined" / "stw_combined_mapped.csv"
+SCRIPT_DIR = Path(__file__).resolve().parent
+DATA_DIR = SCRIPT_DIR.parent
+DEFAULT_INPUT = DATA_DIR / "cleaned_output" / "combined" / "stw_combined_cleaned.csv"
+DEFAULT_MAP = DATA_DIR.parent / "STW programs" / "column_map.csv"
+DEFAULT_OUTPUT = DATA_DIR / "cleaned_output" / "combined" / "stw_combined_mapped.csv"
 
 TIME_KEY_COLUMNS = 3
 MAP_TIME_FORMAT = "%m/%d/%Y %H:%M"

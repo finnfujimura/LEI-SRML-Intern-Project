@@ -12,7 +12,7 @@ The cleaning pipeline (run via ``main()``) performs eight steps:
 
   1. Discover all source files under ``Raw Data/STW_*/``.
   2. Load rows into a SQLite database, dropping the station-ID column and
-     removing exact duplicates (rows identical from column 2 onward).
+     keeping only the first row seen for each (year, day, hhmm) timestamp.
   3. Write one sorted CSV per year to ``cleaned_output/yearly_cleaned/``.
   4. For each year, compare observed timestamps against the full 1,440
      valid minute-of-day HHMM values and merge placeholder rows for gaps.
@@ -28,11 +28,12 @@ Key conventions:
   - **HHMM format**: An integer where HH = hours (00-23) and MM = minutes
     (00-59). Valid values run from 0001 to 2359, plus the special value 2400
     (end-of-day midnight). This yields 1,440 timestamps per day.
-  - **First-day grace**: On the very first day of a scope, timestamps earlier
-    than the first observed reading are *not* counted as missing (the station
-    may not have been running yet).
-  - **Deduplication key**: Everything after the station-ID column. Two rows
-    with the same year/day/time *and* identical measurements are duplicates.
+  - **Boundary grace**: On the very first day of a scope, timestamps earlier
+    than the first observed reading are *not* counted as missing. On the very
+    last day of a scope, timestamps later than the last observed reading are
+    also *not* counted as missing.
+  - **Deduplication key**: ``(year, day, hhmm)`` only. If multiple rows share
+    the same timestamp, the first one seen is kept and later rows are ignored.
 """
 
 from __future__ import annotations
@@ -115,10 +116,8 @@ def discover_input_files(base_dir: Path) -> list[Path]:
 def init_db(db_path: Path) -> sqlite3.Connection:
     """Create (or recreate) a temporary SQLite database for deduplication.
 
-    The ``dedup_rows`` table uses the full row text (minus the station-ID
-    column) as a primary key so that ``INSERT OR IGNORE`` silently skips
-    duplicates.  An index on (year, day, time) supports the ordered queries
-    used later when writing output files.
+    The ``dedup_rows`` table uses ``(year, day, time)`` as its primary key so
+    that ``INSERT OR IGNORE`` keeps only the first row seen for each timestamp.
     """
     if db_path.exists():
         db_path.unlink()
@@ -129,14 +128,14 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute(
         """
         CREATE TABLE dedup_rows (
-            row_tail TEXT PRIMARY KEY,
             year INTEGER NOT NULL,
             day INTEGER NOT NULL,
-            time INTEGER NOT NULL
+            time INTEGER NOT NULL,
+            row_tail TEXT NOT NULL,
+            PRIMARY KEY (year, day, time)
         );
         """
     )
-    conn.execute("CREATE INDEX idx_year_day_time ON dedup_rows (year, day, time);")
     return conn
 
 
@@ -155,7 +154,8 @@ def ingest_files(conn: sqlite3.Connection, files: Iterable[Path], drop_first_col
         rejected.
 
     Rows are batched in groups of 10,000 for efficient bulk inserts.
-    Duplicates are silently skipped by the ``INSERT OR IGNORE`` strategy.
+    Later rows with the same ``(year, day, hhmm)`` timestamp are silently
+    skipped by the ``INSERT OR IGNORE`` strategy.
     """
     stats = IngestStats()
     batch: list[tuple[str, int, int, int]] = []
@@ -521,6 +521,9 @@ def log_missing_timestamps(
       - **First-day grace**: timestamps before the first observed reading on
         the very first day are not counted as missing, since the station may
         not have been active yet.
+      - **Last-day grace**: timestamps after the last observed reading on the
+        very last day are not counted as missing, since the dataset may end
+        before the day is complete.
       - **Entirely missing days**: if two consecutive observed days within the
         same year have a gap (e.g. day 5 then day 8), the intervening days
         (6 and 7) are logged as fully missing (all 1,440 timestamps).
@@ -543,6 +546,24 @@ def log_missing_timestamps(
     out_of_range = 0                             # invalid HHMM count in group
     first_valid_key: tuple[int, int] | None = None   # used for first-day grace
     first_valid_time: int | None = None
+    last_valid_key: tuple[int, int] | None = None    # used for last-day grace
+    last_valid_time: int | None = None
+
+    def find_boundary_valid_time(descending: bool) -> tuple[tuple[int, int] | None, int | None]:
+        """Find the first or last valid timestamp in the requested direction."""
+        order = "DESC" if descending else "ASC"
+        boundary_query = (
+            "SELECT year, day, time FROM dedup_rows "
+            f"WHERE year IN ({placeholders}) "
+            f"ORDER BY year {order}, day {order}, time {order};"
+        )
+        for year, day, time in conn.execute(boundary_query, years):
+            if is_valid_hhmm(time):
+                return (year, day), time
+        return None, None
+
+    first_valid_key, first_valid_time = find_boundary_valid_time(descending=False)
+    last_valid_key, last_valid_time = find_boundary_valid_time(descending=True)
 
     def flush_group() -> None:
         """Finish processing the current (year, day) group."""
@@ -551,9 +572,11 @@ def log_missing_timestamps(
             return
         year, day = current_key
         missing = [t for t in VALID_HHMM_TIMES if t not in times_seen]
-        # First-day grace: don't flag timestamps before the station started.
+        # Boundary grace: don't flag timestamps outside the observed window.
         if current_key == first_valid_key and first_valid_time is not None:
             missing = [t for t in missing if t >= first_valid_time]
+        if current_key == last_valid_key and last_valid_time is not None:
+            missing = [t for t in missing if t <= last_valid_time]
         summary.days_total += 1
         summary.missing_timestamps_total += len(missing)
         summary.out_of_range_timestamps += out_of_range
@@ -583,9 +606,6 @@ def log_missing_timestamps(
                         log_fully_missing_day(year, missing_day)
             current_key = key
         if is_valid_hhmm(time):
-            if first_valid_key is None:
-                first_valid_key = key
-                first_valid_time = time
             times_seen.add(time)
         else:
             out_of_range += 1
@@ -622,7 +642,7 @@ def write_summary_report(
         f"Invalid rows (too few columns): {ingest.invalid_short}",
         f"Invalid rows (non-integer year/day/time): {ingest.invalid_key}",
         f"Unique cleaned rows: {unique_rows}",
-        f"Duplicate rows removed (based on columns 2+): {duplicates_removed}",
+        f"Duplicate timestamp rows removed (same year/day/time): {duplicates_removed}",
         f"Years found: {', '.join(map(str, years))}",
         "Yearly row counts:",
     ]
@@ -759,7 +779,7 @@ def main() -> None:
         f"Combined file: {combined_file.name}",
         f"Rows read: {checked_rows}",
         f"Unique rows: {unique_checked_rows}",
-        f"Duplicates found on recheck: {duplicates_after_recheck}",
+        f"Duplicate timestamps found on recheck: {duplicates_after_recheck}",
         f"Day groups checked: {checked_missing.days_total}",
         f"Days with missing timestamps: {checked_missing.days_with_missing}",
         f"Missing timestamps total: {checked_missing.missing_timestamps_total}",
