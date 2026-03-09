@@ -1,4 +1,7 @@
-Data/cleaned_output/
+final output/
+yearly cleaned/
+reports/
+plots/
 __pycache__/
 *.pyc
 .DS_Store
