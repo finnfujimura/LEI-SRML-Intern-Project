@@ -2,6 +2,20 @@
 
 Data cleaning and calibration pipeline for SRML Data.
 
+## Dependencies
+
+Base pipeline:
+
+```bash
+python -m pip install pandas pyarrow
+```
+
+Notebook plotting stack:
+
+```bash
+python -m pip install holoviews hvplot notebook bokeh
+```
+
 ## Usage
 
 Run the full pipeline:
