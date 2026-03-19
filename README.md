@@ -21,9 +21,16 @@ python scripts/05_map_combined_columns.py
 python scripts/06_convert_mapped_to_mv_irr.py
 ```
 
+Launch the full-history notebook explorer:
+
+```bash
+python -m notebook plots/stw_mV_Irr_explorer.ipynb
+```
+
 ## Outputs
 
 - `final output/stw_mV_Irr.csv`: final calibrated output.
+- `final output/stw_mV_Irr.parquet`: Parquet copy for interactive notebook exploration.
 - `yearly cleaned/`: yearly cleaned CSVs.
 - `reports/`: missing-timestamp logs, processing summary, recheck report, mapped intermediate CSVs, outlier report, and pipeline state.
-- `plots/`: interactive metric plots.
+- `plots/stw_mV_Irr_explorer.ipynb`: Datashader notebook for full-history interactive plots.

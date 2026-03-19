@@ -6,8 +6,8 @@ Reads the mapped combined STW CSV, loads effective-dated M_program and
 M_should_be values from matching metric worksheets in
 STW_sitefile_and_mapping.xlsx, and writes a new CSV where convertible metrics
 produce paired *_mV and *_Irr columns. It also writes a calibration-change log,
-an outlier report, and interactive HTML overview plots for each converted
-metric.
+an outlier report, a Parquet copy of the final dataset, and a Jupyter notebook
+for Datashader-based full-history exploration.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import xml.etree.ElementTree as ET
 from bisect import bisect_right
 from dataclasses import dataclass
@@ -24,6 +23,8 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -31,12 +32,14 @@ ROOT_DIR = SCRIPT_DIR.parent
 DEFAULT_INPUT = ROOT_DIR / "reports" / "stw_combined_mapped.csv"
 DEFAULT_WORKBOOK = ROOT_DIR / "STW programs" / "STW_sitefile_and_mapping.xlsx"
 DEFAULT_OUTPUT = ROOT_DIR / "final output" / "stw_mV_Irr.csv"
+DEFAULT_PARQUET_OUTPUT = ROOT_DIR / "final output" / "stw_mV_Irr.parquet"
+DEFAULT_NOTEBOOK_OUTPUT = ROOT_DIR / "plots" / "stw_mV_Irr_explorer.ipynb"
 INPUT_TIME_FORMAT = "%Y/%m/%d %H:%M"
 PASS_THROUGH_METRICS = {"TEMP", "SZA", "AZM"}
 EXCLUDED_METRICS = {"PIR"}
-MAX_PLOT_POINTS = 10000
 OUTLIER_WINDOW = 241
 OUTLIER_Z_THRESHOLD = 8.0
+PARQUET_CHUNK_SIZE = 200_000
 XLSX_NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "pkgrel": "http://schemas.openxmlformats.org/package/2006/relationships",
@@ -69,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Convert mapped STW metric values to mV and Irr using effective-dated "
-            "workbook calibration values, then write outlier and HTML plot artifacts."
+            "workbook calibration values, then write outlier, Parquet, and notebook artifacts."
         )
     )
     parser.add_argument(
@@ -103,16 +106,16 @@ def parse_args() -> argparse.Namespace:
         help="Optional path for the outliers CSV (default: reports/<output_stem>_outliers.csv)",
     )
     parser.add_argument(
-        "--plots-dir",
+        "--parquet-output",
         type=Path,
-        default=None,
-        help="Optional directory for generated HTML plots (default: repo-root plots/ directory)",
+        default=DEFAULT_PARQUET_OUTPUT,
+        help=f"Path to the Parquet copy of the converted output (default: {DEFAULT_PARQUET_OUTPUT})",
     )
     parser.add_argument(
-        "--max-plot-points",
-        type=int,
-        default=MAX_PLOT_POINTS,
-        help=f"Maximum sampled points per overview plot (default: {MAX_PLOT_POINTS})",
+        "--notebook-output",
+        type=Path,
+        default=DEFAULT_NOTEBOOK_OUTPUT,
+        help=f"Path to the generated Jupyter notebook explorer (default: {DEFAULT_NOTEBOOK_OUTPUT})",
     )
     parser.add_argument(
         "--outlier-window",
@@ -137,11 +140,6 @@ def default_log_output_path(output_path: Path) -> Path:
 def default_outliers_output_path(output_path: Path) -> Path:
     """Return the default outliers CSV path for a given output CSV."""
     return ROOT_DIR / "reports" / f"{output_path.stem}_outliers.csv"
-
-
-def default_plots_dir(output_path: Path) -> Path:
-    """Return the default plots directory for a given output CSV."""
-    return ROOT_DIR / "plots"
 
 
 def excel_column_name_to_index(column_name: str) -> int:
@@ -510,206 +508,188 @@ def detect_outliers(output_csv: Path, outliers_output: Path, columns: list[str],
     return len(result)
 
 
-def make_json_ready(values: list[float]) -> list[float | None]:
-    """Convert NaN-containing float lists into JSON-safe values."""
-    ready: list[float | None] = []
-    for value in values:
-        if math.isnan(value):
-            ready.append(None)
-        else:
-            ready.append(value)
-    return ready
+def write_parquet_copy(csv_path: Path, parquet_path: Path, chunk_size: int = PARQUET_CHUNK_SIZE) -> int:
+    """Write a Parquet copy of the converted CSV in chunks."""
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    if parquet_path.exists():
+        parquet_path.unlink()
+
+    row_count = 0
+    writer: pq.ParquetWriter | None = None
+    try:
+        for chunk in pd.read_csv(
+            csv_path,
+            chunksize=chunk_size,
+            na_values=["NaN"],
+            keep_default_na=True,
+            parse_dates=["datetime"],
+        ):
+            for column_name in chunk.columns:
+                if column_name == "datetime":
+                    continue
+                chunk[column_name] = pd.to_numeric(chunk[column_name], errors="coerce")
+
+            table = pa.Table.from_pandas(chunk, preserve_index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(parquet_path, table.schema, compression="snappy")
+            writer.write_table(table)
+            row_count += len(chunk)
+    finally:
+        if writer is not None:
+            writer.close()
+
+    return row_count
 
 
-def build_metric_overview_data(csv_path: Path, metric_name: str, max_plot_points: int) -> dict[str, list[float | None] | list[str]]:
-    """Downsample one metric's mV and Irr series for HTML overview plots."""
-    mv_column = f"{metric_name}_mV"
-    irr_column = f"{metric_name}_Irr"
-    with csv_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        total_rows = sum(1 for _ in reader)
+def build_notebook_cells(parquet_rel: str, outliers_rel: str) -> list[dict[str, object]]:
+    """Return notebook cells for the Datashader-based STW explorer."""
+    notebook_markdown = """# STW Full-History Explorer
 
-    sample_step = max(1, math.ceil(total_rows / max_plot_points))
-    times: list[str] = []
-    mv_values: list[float] = []
-    irr_values: list[float] = []
-    last_row: dict[str, str] | None = None
-    last_row_index = 0
-    sampled_last_index = 0
+This notebook is the interactive viewer for the full STW mV/Irr dataset.
 
-    with csv_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row_index, row in enumerate(reader, start=1):
-            last_row = row
-            last_row_index = row_index
-            if (row_index - 1) % sample_step != 0:
-                continue
-            sampled_last_index = row_index
-            times.append((row.get("datetime", "") or "").strip())
-            mv_text = (row.get(mv_column, "") or "").strip()
-            irr_text = (row.get(irr_column, "") or "").strip()
-            mv_values.append(float("nan") if is_nan_like(mv_text) else float(mv_text))
-            irr_values.append(float("nan") if is_nan_like(irr_text) else float(irr_text))
+- Each metric is shown as a simple full-history line plot.
+- Missing values are rendered as `-99999` so missing timestamps stay visible in the line series.
+- The notebook renders full-history views for `GHI`, `DHI`, and `DNI` across the complete dataset time range.
+- Use `plot_metric_window(...)` only when you need exact values in a smaller time window.
+"""
+    notebook_setup = f"""from pathlib import Path
 
-    if last_row is not None and last_row_index != sampled_last_index:
-        times.append((last_row.get("datetime", "") or "").strip())
-        mv_text = (last_row.get(mv_column, "") or "").strip()
-        irr_text = (last_row.get(irr_column, "") or "").strip()
-        mv_values.append(float("nan") if is_nan_like(mv_text) else float(mv_text))
-        irr_values.append(float("nan") if is_nan_like(irr_text) else float(irr_text))
+import holoviews as hv
+import hvplot.pandas
+import pandas as pd
 
-    return {
-        "datetime": times,
-        mv_column: make_json_ready(mv_values),
-        irr_column: make_json_ready(irr_values),
+hv.extension("bokeh")
+
+ROOT_DIR = Path.cwd().resolve().parent if Path.cwd().name == "plots" else Path.cwd().resolve()
+PARQUET_PATH = ROOT_DIR / {parquet_rel!r}
+
+df = pd.read_parquet(PARQUET_PATH)
+df["datetime"] = pd.to_datetime(df["datetime"])
+metrics = sorted(column[:-3] for column in df.columns if column.endswith("_mV"))
+"""
+    notebook_functions = """def plot_metric(metric: str):
+    mv_column = f"{metric}_mV"
+    irr_column = f"{metric}_Irr"
+    metric_df = df[["datetime", mv_column, irr_column]].copy()
+    metric_df[mv_column] = metric_df[mv_column].fillna(-99999)
+    metric_df[irr_column] = metric_df[irr_column].fillna(-99999)
+
+    return metric_df.hvplot.line(
+        x="datetime",
+        y=[mv_column, irr_column],
+        responsive=True,
+        min_height=520,
+        xlabel="Time",
+        ylabel="Value",
+        title=f"{metric} full history",
+        legend="top",
+    )
+
+
+def plot_metric_window(metric: str, start: str, end: str):
+    mv_column = f"{metric}_mV"
+    irr_column = f"{metric}_Irr"
+    window = df.loc[
+        (df["datetime"] >= pd.Timestamp(start)) & (df["datetime"] <= pd.Timestamp(end)),
+        ["datetime", mv_column, irr_column],
+    ].copy()
+    if window.empty:
+        raise ValueError(f"No rows found for {metric} between {start} and {end}.")
+
+    window[mv_column] = window[mv_column].fillna(-99999)
+    window[irr_column] = window[irr_column].fillna(-99999)
+
+    return window.hvplot.line(
+        x="datetime",
+        y=[mv_column, irr_column],
+        responsive=True,
+        min_height=520,
+        xlabel="Time",
+        ylabel="Value",
+        title=f"{metric} detailed window: {start} to {end}",
+        legend="top",
+    )
+"""
+    notebook_ghi = """plot_metric("GHI")"""
+    notebook_dhi = """plot_metric("DHI")"""
+    notebook_dni = """plot_metric("DNI")"""
+    notebook_drilldown = """# Optional exact-window helper example:
+# plot_metric_window("GHI", "2024-02-01 00:00", "2024-02-03 00:00")"""
+
+    def code_cell(source: str) -> dict[str, object]:
+        return {
+            "cell_type": "code",
+            "execution_count": None,
+            "metadata": {},
+            "outputs": [],
+            "source": source.splitlines(keepends=True),
+        }
+
+    return [
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": notebook_markdown.splitlines(keepends=True),
+        },
+        code_cell(notebook_setup),
+        code_cell(notebook_functions),
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## GHI Full History\n"],
+        },
+        code_cell(notebook_ghi),
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## DHI Full History\n"],
+        },
+        code_cell(notebook_dhi),
+        {
+            "cell_type": "markdown",
+            "metadata": {},
+            "source": ["## DNI Full History\n"],
+        },
+        code_cell(notebook_dni),
+        code_cell(notebook_drilldown),
+    ]
+
+
+def write_explorer_notebook(notebook_path: Path, parquet_path: Path, outliers_output: Path) -> None:
+    """Write the Jupyter notebook used for full-history interactive exploration."""
+    notebook_path.parent.mkdir(parents=True, exist_ok=True)
+    for stale in notebook_path.parent.glob("*.html"):
+        stale.unlink()
+    for stale in notebook_path.parent.glob("*.png"):
+        stale.unlink()
+
+    notebook = {
+        "cells": build_notebook_cells(
+            parquet_path.relative_to(ROOT_DIR).as_posix(),
+            outliers_output.relative_to(ROOT_DIR).as_posix(),
+        ),
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3",
+            },
+            "language_info": {
+                "name": "python",
+                "version": "3",
+            },
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5,
     }
-
-
-def build_outlier_lookup(outliers_output: Path) -> dict[tuple[str, str], list[dict[str, float | str]]]:
-    """Load outliers.csv into a lookup keyed by (metric, value_type)."""
-    lookup: dict[tuple[str, str], list[dict[str, float | str]]] = {}
-    if not outliers_output.exists():
-        return lookup
-
-    with outliers_output.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            key = ((row.get("metric", "") or "").strip(), (row.get("value_type", "") or "").strip())
-            lookup.setdefault(key, []).append(
-                {
-                    "datetime": (row.get("datetime", "") or "").strip(),
-                    "value": (row.get("value", "") or "").strip(),
-                    "robust_z": (row.get("robust_z", "") or "").strip(),
-                }
-            )
-    return lookup
-
-
-def sanitize_plot_filename(metric_name: str) -> str:
-    """Return a safe HTML filename for a metric."""
-    return f"{metric_name}.html"
-
-
-def write_metric_html_plot(
-    plots_dir: Path,
-    metric_name: str,
-    overview_data: dict[str, list[float | None] | list[str]],
-    outlier_lookup: dict[tuple[str, str], list[dict[str, float | str]]],
-) -> None:
-    """Write one interactive HTML overview per converted metric."""
-    mv_column = f"{metric_name}_mV"
-    irr_column = f"{metric_name}_Irr"
-    mv_outliers = outlier_lookup.get((metric_name, "mV"), [])
-    irr_outliers = outlier_lookup.get((metric_name, "Irr"), [])
-
-    html = f'''<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{metric_name} Overview</title>
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <style>
-    body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f6f7f8; color: #111; }}
-    h1 {{ margin: 0 0 8px; font-size: 24px; }}
-    p {{ margin: 0 0 16px; color: #444; }}
-    #plot {{ width: 100%; height: 78vh; background: white; border: 1px solid #ddd; }}
-  </style>
-</head>
-<body>
-  <h1>{metric_name} Overview</h1>
-  <p>Zoom and pan to inspect candidate outlier periods. Lines are downsampled for responsiveness; outlier markers use exact timestamps.</p>
-  <div id="plot"></div>
-  <script>
-    const overview = {json.dumps(overview_data)};
-    const mvOutliers = {json.dumps(mv_outliers)};
-    const irrOutliers = {json.dumps(irr_outliers)};
-    const traces = [
-      {{
-        x: overview.datetime,
-        y: overview["{mv_column}"],
-        type: "scattergl",
-        mode: "lines",
-        name: "{mv_column}",
-        line: {{ color: "#1f77b4", width: 1 }}
-      }},
-      {{
-        x: overview.datetime,
-        y: overview["{irr_column}"],
-        type: "scattergl",
-        mode: "lines",
-        name: "{irr_column}",
-        line: {{ color: "#d62728", width: 1 }}
-      }},
-      {{
-        x: mvOutliers.map(item => item.datetime),
-        y: mvOutliers.map(item => Number(item.value)),
-        type: "scattergl",
-        mode: "markers",
-        name: "{mv_column} outliers",
-        marker: {{ color: "#1f77b4", size: 6, symbol: "circle-open" }},
-        hovertemplate: "datetime=%{{x}}<br>value=%{{y}}<br>robust_z=%{{text}}<extra></extra>",
-        text: mvOutliers.map(item => item.robust_z)
-      }},
-      {{
-        x: irrOutliers.map(item => item.datetime),
-        y: irrOutliers.map(item => Number(item.value)),
-        type: "scattergl",
-        mode: "markers",
-        name: "{irr_column} outliers",
-        marker: {{ color: "#d62728", size: 6, symbol: "diamond-open" }},
-        hovertemplate: "datetime=%{{x}}<br>value=%{{y}}<br>robust_z=%{{text}}<extra></extra>",
-        text: irrOutliers.map(item => item.robust_z)
-      }}
-    ];
-    const layout = {{
-      hovermode: "x unified",
-      dragmode: "zoom",
-      showlegend: true,
-      xaxis: {{ title: "Time", rangeslider: {{ visible: true }} }},
-      yaxis: {{ title: "Value" }},
-      margin: {{ l: 70, r: 20, t: 20, b: 60 }}
-    }};
-    Plotly.newPlot("plot", traces, layout, {{responsive: true, displaylogo: false}});
-  </script>
-</body>
-</html>
-'''
-    (plots_dir / sanitize_plot_filename(metric_name)).write_text(html, encoding="utf-8")
-
-
-def create_html_plots(
-    csv_path: Path,
-    plots_dir: Path,
-    metrics: list[str],
-    outliers_output: Path,
-    max_plot_points: int,
-) -> int:
-    """Generate one interactive HTML overview per converted metric."""
-    if max_plot_points < 1:
-        raise ValueError("max_plot_points must be at least 1.")
-
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    for stale in plots_dir.glob("*.png"):
-        stale.unlink()
-    for stale in plots_dir.glob("*.html"):
-        stale.unlink()
-
-    outlier_lookup = build_outlier_lookup(outliers_output)
-    written = 0
-    for metric_name in metrics:
-        overview_data = build_metric_overview_data(csv_path, metric_name, max_plot_points)
-        write_metric_html_plot(plots_dir, metric_name, overview_data, outlier_lookup)
-        written += 1
-    return written
+    notebook_path.write_text(json.dumps(notebook, indent=2) + "\n", encoding="utf-8")
 
 
 def main() -> None:
-    """Run the conversion, outlier detection, and HTML plot generation."""
+    """Run the conversion, outlier detection, Parquet export, and notebook generation."""
     args = parse_args()
     log_output = args.log_output or default_log_output_path(args.output)
     outliers_output = args.outliers_output or default_outliers_output_path(args.output)
-    plots_dir = args.plots_dir or default_plots_dir(args.output)
 
     artifacts = convert_stw_mapped_to_mv_irr(
         args.input,
@@ -729,13 +709,8 @@ def main() -> None:
         args.outlier_window,
         args.outlier_z_threshold,
     )
-    html_plots_written = create_html_plots(
-        args.output,
-        plots_dir,
-        artifacts.converted_metrics,
-        outliers_output,
-        args.max_plot_points,
-    )
+    parquet_rows_written = write_parquet_copy(args.output, args.parquet_output)
+    write_explorer_notebook(args.notebook_output, args.parquet_output, outliers_output)
 
     print(
         f"Wrote {artifacts.rows_written} rows to {args.output} using calibration values from {args.workbook}.",
@@ -743,7 +718,8 @@ def main() -> None:
     )
     print(f"Wrote calibration-change log to {log_output}.", flush=True)
     print(f"Wrote {outliers_written} outlier rows to {outliers_output}.", flush=True)
-    print(f"Wrote {html_plots_written} interactive HTML plots to {plots_dir}.", flush=True)
+    print(f"Wrote {parquet_rows_written} rows to Parquet at {args.parquet_output}.", flush=True)
+    print(f"Wrote Jupyter explorer notebook to {args.notebook_output}.", flush=True)
 
 
 if __name__ == "__main__":
