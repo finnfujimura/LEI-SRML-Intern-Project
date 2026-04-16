@@ -39,7 +39,20 @@ PASS_THROUGH_METRICS = {"TEMP", "SZA", "AZM"}
 EXCLUDED_METRICS = {"PIR"}
 OUTLIER_WINDOW = 241
 OUTLIER_Z_THRESHOLD = 8.0
+IRR_VALID_MIN = -100.0
+IRR_VALID_MAX = 10000.0
 PARQUET_CHUNK_SIZE = 200_000
+OUTLIER_REPORT_COLUMNS = [
+    "datetime",
+    "column",
+    "metric",
+    "value_type",
+    "value",
+    "local_median",
+    "local_mad",
+    "robust_z",
+    "rule",
+]
 XLSX_NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "pkgrel": "http://schemas.openxmlformats.org/package/2006/relationships",
@@ -453,8 +466,13 @@ def convert_stw_mapped_to_mv_irr(
     )
 
 
-def detect_outliers(output_csv: Path, outliers_output: Path, columns: list[str], window: int, threshold: float) -> int:
-    """Write an outlier report using rolling median and MAD per converted series."""
+def empty_outlier_frame() -> pd.DataFrame:
+    """Return an empty outlier frame with the expected schema."""
+    return pd.DataFrame(columns=OUTLIER_REPORT_COLUMNS)
+
+
+def detect_outliers_frame(output_csv: Path, columns: list[str], window: int, threshold: float) -> pd.DataFrame:
+    """Return an outlier report using rolling median and MAD per converted series."""
     if window < 5:
         raise ValueError("outlier_window must be at least 5.")
     if threshold <= 0:
@@ -493,18 +511,172 @@ def detect_outliers(output_csv: Path, outliers_output: Path, columns: list[str],
                 "local_median": rolling_median.loc[mask],
                 "local_mad": rolling_mad.loc[mask],
                 "robust_z": robust_z.loc[mask],
+                "rule": "rolling_mad",
             }
         )
         outlier_frames.append(outlier_frame)
 
     if outlier_frames:
-        result = pd.concat(outlier_frames, ignore_index=True).sort_values(["datetime", "column"])
-    else:
-        result = pd.DataFrame(
-            columns=["datetime", "column", "metric", "value_type", "value", "local_median", "local_mad", "robust_z"]
+        return pd.concat(outlier_frames, ignore_index=True).sort_values(["datetime", "column"])
+
+    return empty_outlier_frame()
+
+
+def detect_irr_bound_outliers_frame(
+    output_csv: Path,
+    metrics: list[str],
+    min_irr: float = IRR_VALID_MIN,
+    max_irr: float = IRR_VALID_MAX,
+) -> pd.DataFrame:
+    """Return irradiance rows that fall outside the allowed absolute range."""
+    outlier_frames: list[pd.DataFrame] = []
+
+    for metric_name in metrics:
+        irr_column = f"{metric_name}_Irr"
+        frame = pd.read_csv(
+            output_csv,
+            usecols=["datetime", irr_column],
+            parse_dates=["datetime"],
+            na_values=["NaN"],
+            keep_default_na=True,
+        )
+        values = pd.to_numeric(frame[irr_column], errors="coerce")
+        mask = values.notna() & (values.lt(min_irr) | values.gt(max_irr))
+        if not mask.any():
+            continue
+
+        outlier_frames.append(
+            pd.DataFrame(
+                {
+                    "datetime": frame.loc[mask, "datetime"].dt.strftime(INPUT_TIME_FORMAT),
+                    "column": irr_column,
+                    "metric": metric_name,
+                    "value_type": "Irr",
+                    "value": values.loc[mask],
+                    "local_median": float("nan"),
+                    "local_mad": float("nan"),
+                    "robust_z": float("nan"),
+                    "rule": f"irr_bounds[{min_irr:g},{max_irr:g}]",
+                }
+            )
         )
 
-    result.to_csv(outliers_output, index=False)
+    if outlier_frames:
+        return pd.concat(outlier_frames, ignore_index=True).sort_values(["datetime", "column"])
+
+    return empty_outlier_frame()
+
+
+def combine_outlier_frames(*frames: pd.DataFrame) -> pd.DataFrame:
+    """Combine multiple outlier frames into one deduplicated report."""
+    non_empty = [frame for frame in frames if not frame.empty]
+    if not non_empty:
+        return empty_outlier_frame()
+
+    combined = pd.concat(non_empty, ignore_index=True, sort=False)
+
+    def first_non_null(series: pd.Series):
+        non_null = series.dropna()
+        if non_null.empty:
+            return pd.NA
+        return non_null.iloc[0]
+
+    result = (
+        combined.groupby(
+            ["datetime", "column", "metric", "value_type", "value"],
+            as_index=False,
+            dropna=False,
+        )
+        .agg(
+            {
+                "local_median": first_non_null,
+                "local_mad": first_non_null,
+                "robust_z": first_non_null,
+                "rule": lambda values: ",".join(dict.fromkeys(str(value) for value in values if pd.notna(value))),
+            }
+        )
+        .sort_values(["datetime", "column"])
+    )
+    return result[OUTLIER_REPORT_COLUMNS]
+
+
+def write_outlier_report(outliers_output: Path, outliers_frame: pd.DataFrame) -> None:
+    """Write the outlier report CSV."""
+    outliers_frame.to_csv(outliers_output, index=False)
+
+
+def build_outlier_lookup(outliers_frame: pd.DataFrame) -> dict[str, set[str]]:
+    """Build a per-column lookup of datetimes that should be nulled out."""
+    if outliers_frame.empty:
+        return {}
+
+    lookup: dict[str, set[str]] = {}
+    for column_name, group in outliers_frame.groupby("column")["datetime"]:
+        lookup[column_name] = set(group.astype(str))
+
+    for metric_name, group in outliers_frame.groupby("metric")["datetime"]:
+        metric_datetimes = set(group.astype(str))
+        for suffix in ("_mV", "_Irr"):
+            lookup.setdefault(f"{metric_name}{suffix}", set()).update(metric_datetimes)
+
+    return lookup
+
+
+def apply_outlier_nan_mask(
+    output_csv: Path,
+    outlier_lookup: dict[str, set[str]],
+    chunk_size: int = PARQUET_CHUNK_SIZE,
+) -> int:
+    """Rewrite the exported CSV with flagged values replaced by NaN."""
+    if not outlier_lookup:
+        return 0
+
+    temp_output = output_csv.with_name(f"{output_csv.stem}.tmp{output_csv.suffix}")
+    cleaned_values = 0
+    wrote_any = False
+
+    try:
+        for chunk in pd.read_csv(
+            output_csv,
+            chunksize=chunk_size,
+            na_values=["NaN"],
+            keep_default_na=True,
+            dtype={"datetime": str},
+        ):
+            for column_name, flagged_datetimes in outlier_lookup.items():
+                if column_name not in chunk.columns:
+                    continue
+                mask = chunk["datetime"].isin(flagged_datetimes) & chunk[column_name].notna()
+                if not mask.any():
+                    continue
+                chunk.loc[mask, column_name] = pd.NA
+                cleaned_values += int(mask.sum())
+
+            chunk.to_csv(
+                temp_output,
+                mode="a" if wrote_any else "w",
+                index=False,
+                header=not wrote_any,
+                na_rep="NaN",
+            )
+            wrote_any = True
+
+        temp_output.replace(output_csv)
+    finally:
+        if temp_output.exists():
+            temp_output.unlink()
+
+    return cleaned_values
+
+
+def detect_outliers(output_csv: Path, outliers_output: Path, columns: list[str], window: int, threshold: float) -> int:
+    """Write a combined outlier report for rolling-MAD and irradiance-bound filters."""
+    metrics = sorted({column_name.rsplit("_", 1)[0] for column_name in columns if column_name.endswith("_Irr")})
+    result = combine_outlier_frames(
+        detect_outliers_frame(output_csv, columns, window, threshold),
+        detect_irr_bound_outliers_frame(output_csv, metrics),
+    )
+    write_outlier_report(outliers_output, result)
     return len(result)
 
 
@@ -548,7 +720,7 @@ def build_notebook_cells(parquet_rel: str, outliers_rel: str) -> list[dict[str, 
 This notebook is the interactive viewer for the full STW mV/Irr dataset.
 
 - Each metric is shown as a simple full-history line plot.
-- Missing values are rendered as `-99999` so missing timestamps stay visible in the line series.
+- Missing values and cleaned outliers remain `NaN`, which creates visible gaps without dropping timestamps.
 - The notebook renders full-history views for `GHI`, `DHI`, and `DNI` across the complete dataset time range.
 - Use `plot_metric_window(...)` only when you need exact values in a smaller time window.
 """
@@ -571,8 +743,6 @@ metrics = sorted(column[:-3] for column in df.columns if column.endswith("_mV"))
     mv_column = f"{metric}_mV"
     irr_column = f"{metric}_Irr"
     metric_df = df[["datetime", mv_column, irr_column]].copy()
-    metric_df[mv_column] = metric_df[mv_column].fillna(-99999)
-    metric_df[irr_column] = metric_df[irr_column].fillna(-99999)
 
     return metric_df.hvplot.line(
         x="datetime",
@@ -595,9 +765,6 @@ def plot_metric_window(metric: str, start: str, end: str):
     ].copy()
     if window.empty:
         raise ValueError(f"No rows found for {metric} between {start} and {end}.")
-
-    window[mv_column] = window[mv_column].fillna(-99999)
-    window[irr_column] = window[irr_column].fillna(-99999)
 
     return window.hvplot.line(
         x="datetime",
@@ -702,13 +869,17 @@ def main() -> None:
         for metric_name in artifacts.converted_metrics
         for column_name in (f"{metric_name}_mV", f"{metric_name}_Irr")
     ]
-    outliers_written = detect_outliers(
-        args.output,
-        outliers_output,
-        converted_columns,
-        args.outlier_window,
-        args.outlier_z_threshold,
+    outliers_frame = combine_outlier_frames(
+        detect_outliers_frame(
+            args.output,
+            converted_columns,
+            args.outlier_window,
+            args.outlier_z_threshold,
+        ),
+        detect_irr_bound_outliers_frame(args.output, artifacts.converted_metrics),
     )
+    write_outlier_report(outliers_output, outliers_frame)
+    cleaned_values = apply_outlier_nan_mask(args.output, build_outlier_lookup(outliers_frame))
     parquet_rows_written = write_parquet_copy(args.output, args.parquet_output)
     write_explorer_notebook(args.notebook_output, args.parquet_output, outliers_output)
 
@@ -717,7 +888,8 @@ def main() -> None:
         flush=True,
     )
     print(f"Wrote calibration-change log to {log_output}.", flush=True)
-    print(f"Wrote {outliers_written} outlier rows to {outliers_output}.", flush=True)
+    print(f"Wrote {len(outliers_frame)} outlier rows to {outliers_output}.", flush=True)
+    print(f"Replaced {cleaned_values} flagged values with NaN in {args.output}.", flush=True)
     print(f"Wrote {parquet_rows_written} rows to Parquet at {args.parquet_output}.", flush=True)
     print(f"Wrote Jupyter explorer notebook to {args.notebook_output}.", flush=True)
 

@@ -16,6 +16,7 @@ STEP_SCRIPTS = [
     SCRIPTS_DIR / "04_write_reports_and_recheck.py",
     SCRIPTS_DIR / "05_map_combined_columns.py",
     SCRIPTS_DIR / "06_convert_mapped_to_mv_irr.py",
+    SCRIPTS_DIR / "07_detect_irr_irregularity_events.py",
 ]
 
 

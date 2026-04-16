@@ -1,7 +1,9 @@
 final output/
 yearly cleaned/
 reports/
-plots/
+plots/generated/
+plots/*_plots/
+plots/irr_irregularity_event_plots/
 __pycache__/
 *.pyc
 .DS_Store
