@@ -70,6 +70,7 @@ COMBINED_CLEANED_FILE = REPORTS_DIR / "stw_combined_cleaned.csv"
 MAPPED_COMBINED_FILE = REPORTS_DIR / "stw_combined_mapped.csv"
 PIPELINE_STATE_FILE = REPORTS_DIR / "pipeline_state.json"
 MAPPED_EXCLUDED_METRICS = {"PIR"}
+PIPELINE_CUTOFF_DATE = date(2024, 8, 31)
 XLSX_NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "pkgrel": "http://schemas.openxmlformats.org/package/2006/relationships",
@@ -89,6 +90,7 @@ class IngestStats:
     valid_rows: int = 0              # rows that parsed successfully
     invalid_short: int = 0           # rows rejected for too few columns
     invalid_key: int = 0             # rows where year/day/time wasn't an int
+    filtered_after_cutoff: int = 0   # parsed rows skipped for being after the scope
 
 
 @dataclass
@@ -117,6 +119,26 @@ def parse_int(value: str) -> int | None:
         return int(value.strip())
     except ValueError:
         return None
+
+
+def build_row_observation_date(year: int, day_of_year: int) -> date:
+    """Build the observation date represented by a raw ``year``/``day`` pair."""
+    return date(year, 1, 1) + timedelta(days=day_of_year - 1)
+
+
+def row_is_within_pipeline_scope(year: int, day_of_year: int) -> bool:
+    """Return True when a row falls on or before the configured pipeline cutoff.
+
+    The raw files encode end-of-day midnight as ``2400`` on the same day, so the
+    cutoff is intentionally based on the row's observation date instead of the
+    rendered wall-clock timestamp.
+    """
+    try:
+        return build_row_observation_date(year, day_of_year) <= PIPELINE_CUTOFF_DATE
+    except ValueError:
+        # Preserve the old behavior for malformed-but-integer dates rather than
+        # silently changing validation semantics here.
+        return True
 
 
 def discover_input_files(base_dir: Path) -> list[Path]:
@@ -180,7 +202,8 @@ def ingest_files(conn: sqlite3.Connection, files: Iterable[Path], drop_first_col
 
     Rows are batched in groups of 10,000 for efficient bulk inserts.
     Later rows with the same ``(year, day, hhmm)`` timestamp are silently
-    skipped by the ``INSERT OR IGNORE`` strategy.
+    skipped by the ``INSERT OR IGNORE`` strategy. Rows after
+    ``PIPELINE_CUTOFF_DATE`` are excluded from the pipeline scope.
     """
     stats = IngestStats()
     batch: list[tuple[str, int, int, int]] = []
@@ -227,6 +250,9 @@ def ingest_files(conn: sqlite3.Connection, files: Iterable[Path], drop_first_col
 
                 if year is None or day is None or time is None:
                     stats.invalid_key += 1
+                    continue
+                if not row_is_within_pipeline_scope(year, day):
+                    stats.filtered_after_cutoff += 1
                     continue
 
                 batch.append((row_tail, year, day, time))
@@ -494,6 +520,20 @@ def write_scope_file(conn: sqlite3.Connection, years: list[int], out_path: Path)
     return rows_written
 
 
+def remove_stale_year_files(out_dir: Path, active_years: Iterable[int]) -> list[Path]:
+    """Delete yearly cleaned CSVs that are outside the current pipeline scope."""
+    active_names = {f"stw_{year}_cleaned.csv" for year in active_years}
+    removed: list[Path] = []
+    if not out_dir.exists():
+        return removed
+    for path in sorted(out_dir.glob("stw_*_cleaned.csv")):
+        if path.name in active_names:
+            continue
+        path.unlink()
+        removed.append(path)
+    return removed
+
+
 def write_year_files(conn: sqlite3.Connection, years: list[int], out_dir: Path) -> dict[int, int]:
     """Write one ``stw_<year>_cleaned.csv`` file per year.
 
@@ -510,10 +550,11 @@ def write_year_files(conn: sqlite3.Connection, years: list[int], out_dir: Path) 
 def select_combined_years(years: list[int], year_counts: dict[int, int]) -> list[int]:
     """Pick which years go into the combined file.
 
-    Current strategy: include all available years.
+    Current strategy: include all available years that can contain rows inside
+    the configured pipeline cutoff.
     """
     del year_counts  # unused; kept in signature for future flexibility
-    return sorted(years)
+    return sorted(year for year in years if year <= PIPELINE_CUTOFF_DATE.year)
 
 
 # ---------------------------------------------------------------------------
@@ -700,11 +741,13 @@ def write_summary_report(
     """Write a human-readable summary of the entire pipeline run."""
     duplicates_removed = ingest.valid_rows - unique_rows
     lines = [
+        f"Pipeline cutoff date: {PIPELINE_CUTOFF_DATE.isoformat()}",
         f"Source files scanned: {ingest.files_seen}",
         f"Total lines seen: {ingest.lines_seen}",
         f"Valid rows parsed: {ingest.valid_rows}",
         f"Invalid rows (too few columns): {ingest.invalid_short}",
         f"Invalid rows (non-integer year/day/time): {ingest.invalid_key}",
+        f"Rows skipped after cutoff: {ingest.filtered_after_cutoff}",
         f"Unique cleaned rows: {unique_rows}",
         f"Duplicate timestamp rows removed (same year/day/time): {duplicates_removed}",
         f"Years found: {', '.join(map(str, years))}",
@@ -1019,6 +1062,7 @@ def run_step_01_ingest_raw_to_yearly_cleaned() -> None:
         ingest_stats = ingest_files(conn, files, drop_first_col=True)
         unique_rows = conn.execute("SELECT COUNT(*) FROM dedup_rows;").fetchone()[0]
         years = get_years(conn)
+        removed_yearly_files = remove_stale_year_files(YEARLY_CLEANED_DIR, years)
         year_counts = write_year_files(conn, years, YEARLY_CLEANED_DIR)
     finally:
         conn.close()
@@ -1026,10 +1070,12 @@ def run_step_01_ingest_raw_to_yearly_cleaned() -> None:
             WORK_DB.unlink()
 
     state = {
+        "pipeline_cutoff_date": PIPELINE_CUTOFF_DATE.isoformat(),
         "ingest": asdict(ingest_stats),
         "unique_rows": unique_rows,
         "years": years,
         "year_counts": {str(year): count for year, count in year_counts.items()},
+        "stale_yearly_files_removed": [path.name for path in removed_yearly_files],
         "yearly_rows_added": 0,
         "combined_years": [],
         "combined_rows": 0,
@@ -1038,7 +1084,7 @@ def run_step_01_ingest_raw_to_yearly_cleaned() -> None:
     }
     write_pipeline_state(state)
     print(
-        f"Step 1 complete: {ingest_stats.valid_rows} valid rows ingested across {len(years)} years.",
+        f"Step 1 complete: {ingest_stats.valid_rows} valid rows ingested across {len(years)} years through {PIPELINE_CUTOFF_DATE.isoformat()}; removed {len(removed_yearly_files)} stale yearly files.",
         flush=True,
     )
 

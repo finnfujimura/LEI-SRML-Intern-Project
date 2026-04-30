@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for metric plot notebooks."""
+"""Shared helpers for yearly metric-plot notebooks."""
 
 from __future__ import annotations
 
@@ -8,21 +8,56 @@ from pathlib import Path
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
-from bokeh.models import ColumnDataSource
+from bokeh.io import output_notebook, show
+from bokeh.models import ColumnDataSource, HoverTool
 from bokeh.plotting import figure, save
 from bokeh.resources import CDN
 
 
-def load_metric(root_dir: Path, metric: str, parquet_path: Path | None = None) -> pd.DataFrame:
-    """Load one irradiance metric from the parquet export."""
-    irr_column = f"{metric}_Irr"
+def resolve_value_column(metric: str, value_column: str | None = None) -> str:
+    """Resolve the parquet column name used for plotting."""
+    return value_column or f"{metric}_Irr"
+
+
+def default_plot_title(metric: str, value_column: str | None = None) -> str:
+    """Return the default plot title prefix for the selected series."""
+    column_name = resolve_value_column(metric, value_column)
+    if column_name == f"{metric}_Irr":
+        return f"{metric} IRR"
+    return column_name
+
+
+def default_y_axis_label(metric: str, value_column: str | None = None) -> str:
+    """Return the default y-axis label for the selected series."""
+    column_name = resolve_value_column(metric, value_column)
+    if column_name == f"{metric}_Irr":
+        return "IRR"
+    return column_name
+
+
+def default_output_stem(metric: str, value_column: str | None = None) -> str:
+    """Return the default filename stem for exported plots."""
+    column_name = resolve_value_column(metric, value_column)
+    if column_name == f"{metric}_Irr":
+        return f"{metric.lower()}_irr"
+    return column_name.lower()
+
+
+def load_metric(
+    root_dir: Path,
+    metric: str,
+    parquet_path: Path | None = None,
+    value_column: str | None = None,
+) -> pd.DataFrame:
+    """Load one metric column from the parquet export."""
+    column_name = resolve_value_column(metric, value_column)
     source_path = parquet_path or root_dir / "final output" / "stw_mV_Irr.parquet"
-    metric_df = pd.read_parquet(source_path, columns=["datetime", irr_column]).copy()
+    metric_df = pd.read_parquet(source_path, columns=["datetime", column_name]).copy()
     metric_df["datetime"] = pd.to_datetime(metric_df["datetime"], errors="coerce")
-    metric_df[irr_column] = pd.to_numeric(metric_df[irr_column], errors="coerce")
+    metric_df[column_name] = pd.to_numeric(metric_df[column_name], errors="coerce")
     metric_df = metric_df.dropna(subset=["datetime"]).sort_values("datetime")
     if metric_df.empty:
-        raise ValueError(f"No rows found for {metric} in {source_path}.")
+        raise ValueError(f"No rows found for {column_name} in {source_path}.")
     return metric_df
 
 
@@ -35,17 +70,23 @@ def build_start_years(metric_df: pd.DataFrame, years: int) -> list[int]:
     return [year for year in available_years if year + years - 1 in available_year_set]
 
 
-def slice_year_window(metric_df: pd.DataFrame, metric: str, start_year: int, years: int) -> tuple[pd.DataFrame, str]:
+def slice_year_window(
+    metric_df: pd.DataFrame,
+    metric: str,
+    start_year: int,
+    years: int,
+    value_column: str | None = None,
+) -> tuple[pd.DataFrame, str]:
     """Slice one calendar-year window and return it with a filename suffix."""
-    irr_column = f"{metric}_Irr"
+    column_name = resolve_value_column(metric, value_column)
     start = pd.Timestamp(year=start_year, month=1, day=1)
     end = pd.Timestamp(year=start_year + years, month=1, day=1)
     window = metric_df.loc[
         (metric_df["datetime"] >= start) & (metric_df["datetime"] < end),
-        ["datetime", irr_column],
+        ["datetime", column_name],
     ].copy()
     if window.empty:
-        raise ValueError(f"No rows found for {metric} between {start.date()} and {end.date()}.")
+        raise ValueError(f"No rows found for {column_name} between {start.date()} and {end.date()}.")
 
     end_year = start_year if years == 1 else start_year + years - 1
     suffix = f"{start_year}" if years == 1 else f"{start_year}_{end_year}"
@@ -60,21 +101,28 @@ def export_static_windows(
     start_years: list[int],
     years: int = 1,
     dpi: int = 150,
+    value_column: str | None = None,
+    plot_title: str | None = None,
+    y_axis_label: str | None = None,
+    output_stem: str | None = None,
 ) -> list[dict[str, object]]:
     """Export static PNG plots for a list of year windows."""
-    irr_column = f"{metric}_Irr"
+    column_name = resolve_value_column(metric, value_column)
+    title_prefix = plot_title or default_plot_title(metric, value_column)
+    y_label = y_axis_label or default_y_axis_label(metric, value_column)
+    file_stem = output_stem or default_output_stem(metric, value_column)
     output_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, object]] = []
 
     for start_year in start_years:
-        window, suffix = slice_year_window(metric_df, metric, start_year, years)
-        output_path = output_dir / f"{metric.lower()}_irr_{suffix}.png"
+        window, suffix = slice_year_window(metric_df, metric, start_year, years, value_column=value_column)
+        output_path = output_dir / f"{file_stem}_{suffix}.png"
 
         fig, ax = plt.subplots(figsize=(14, 6))
-        ax.plot(window["datetime"], window[irr_column], color=color, linewidth=0.6)
-        ax.set_title(f"{metric} IRR ({suffix.replace('_', '-')})")
+        ax.plot(window["datetime"], window[column_name], color=color, linewidth=0.6)
+        ax.set_title(f"{title_prefix} ({suffix.replace('_', '-')})")
         ax.set_xlabel("Datetime")
-        ax.set_ylabel("IRR")
+        ax.set_ylabel(y_label)
         ax.grid(alpha=0.25, linewidth=0.6)
         ax.margins(x=0)
         locator = mdates.AutoDateLocator()
@@ -98,18 +146,115 @@ def export_static_windows(
     return results
 
 
-def maybe_resample_window(window: pd.DataFrame, metric: str, downsample_rule: str | None) -> pd.DataFrame:
+def maybe_resample_window(
+    window: pd.DataFrame,
+    metric: str,
+    downsample_rule: str | None,
+    value_column: str | None = None,
+) -> pd.DataFrame:
     """Optionally resample the interactive plot to make HTML lighter."""
     if not downsample_rule:
         return window
 
-    irr_column = f"{metric}_Irr"
+    column_name = resolve_value_column(metric, value_column)
     return (
-        window.set_index("datetime")[[irr_column]]
+        window.set_index("datetime")[[column_name]]
         .resample(downsample_rule)
         .mean()
         .reset_index()
     )
+
+
+def build_interactive_window_plot(
+    metric_df: pd.DataFrame,
+    metric: str,
+    color: str,
+    start_year: int,
+    years: int = 1,
+    downsample_rule: str | None = None,
+    value_column: str | None = None,
+    plot_title: str | None = None,
+    y_axis_label: str | None = None,
+) -> tuple[figure, pd.DataFrame, pd.DataFrame, str, str]:
+    """Build one interactive Bokeh plot plus its source-window metadata."""
+    column_name = resolve_value_column(metric, value_column)
+    title_prefix = plot_title or default_plot_title(metric, value_column)
+    y_label = y_axis_label or default_y_axis_label(metric, value_column)
+
+    window, suffix = slice_year_window(metric_df, metric, start_year, years, value_column=value_column)
+    plot_df = maybe_resample_window(window, metric, downsample_rule, value_column=value_column)
+    title = f"{title_prefix} ({suffix.replace('_', '-')})"
+
+    source = ColumnDataSource(plot_df)
+    plot = figure(
+        title=title,
+        x_axis_type="datetime",
+        width=1400,
+        height=500,
+        tools="pan,wheel_zoom,box_zoom,reset,save",
+        active_scroll="wheel_zoom",
+        output_backend="webgl",
+    )
+    line_renderer = plot.line("datetime", column_name, source=source, line_width=1, line_color=color)
+    plot.add_tools(
+        HoverTool(
+            renderers=[line_renderer],
+            tooltips=[
+                ("Datetime", "@datetime{%Y-%m-%d %H:%M}"),
+                (y_label, f"@{{{column_name}}}"),
+            ],
+            formatters={"@datetime": "datetime"},
+            mode="vline",
+        )
+    )
+    plot.xaxis.axis_label = "Datetime"
+    plot.yaxis.axis_label = y_label
+    plot.grid.grid_line_alpha = 0.25
+    plot.toolbar.logo = None
+    return plot, plot_df, window, suffix, title
+
+
+def show_interactive_windows(
+    metric_df: pd.DataFrame,
+    metric: str,
+    color: str,
+    selected_years: list[int],
+    years: int = 1,
+    downsample_rule: str | None = None,
+    value_column: str | None = None,
+    plot_title: str | None = None,
+    y_axis_label: str | None = None,
+) -> list[dict[str, object]]:
+    """Render zoomable interactive plots inline inside a Jupyter notebook."""
+    results: list[dict[str, object]] = []
+    if selected_years:
+        output_notebook(hide_banner=True)
+
+    for start_year in selected_years:
+        plot, plot_df, window, _, title = build_interactive_window_plot(
+            metric_df,
+            metric,
+            color,
+            start_year,
+            years=years,
+            downsample_rule=downsample_rule,
+            value_column=value_column,
+            plot_title=plot_title,
+            y_axis_label=y_axis_label,
+        )
+        show(plot)
+        results.append(
+            {
+                "start_year": start_year,
+                "rows": len(plot_df),
+                "source_rows": len(window),
+                "title": title,
+                "kind": "inline",
+                "downsample_rule": downsample_rule,
+            }
+        )
+
+    return results
 
 
 def export_interactive_windows(
@@ -120,34 +265,30 @@ def export_interactive_windows(
     selected_years: list[int],
     years: int = 1,
     downsample_rule: str | None = None,
+    value_column: str | None = None,
+    plot_title: str | None = None,
+    y_axis_label: str | None = None,
+    output_stem: str | None = None,
 ) -> list[dict[str, object]]:
     """Export standalone zoomable HTML plots for selected year windows."""
-    irr_column = f"{metric}_Irr"
+    file_stem = output_stem or default_output_stem(metric, value_column)
     html_dir = output_dir / "interactive"
     html_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, object]] = []
 
     for start_year in selected_years:
-        window, suffix = slice_year_window(metric_df, metric, start_year, years)
-        plot_df = maybe_resample_window(window, metric, downsample_rule)
-        output_path = html_dir / f"{metric.lower()}_irr_{suffix}.html"
-        title = f"{metric} IRR ({suffix.replace('_', '-')})"
-
-        source = ColumnDataSource(plot_df)
-        plot = figure(
-            title=title,
-            x_axis_type="datetime",
-            width=1400,
-            height=500,
-            tools="pan,wheel_zoom,box_zoom,reset,save",
-            active_scroll="wheel_zoom",
-            output_backend="webgl",
+        plot, plot_df, window, suffix, title = build_interactive_window_plot(
+            metric_df,
+            metric,
+            color,
+            start_year,
+            years=years,
+            downsample_rule=downsample_rule,
+            value_column=value_column,
+            plot_title=plot_title,
+            y_axis_label=y_axis_label,
         )
-        plot.line("datetime", irr_column, source=source, line_width=1, line_color=color)
-        plot.xaxis.axis_label = "Datetime"
-        plot.yaxis.axis_label = "IRR"
-        plot.grid.grid_line_alpha = 0.25
-        plot.toolbar.logo = None
+        output_path = html_dir / f"{file_stem}_{suffix}.html"
 
         save(plot, filename=str(output_path), title=title, resources=CDN)
         results.append(

@@ -41,6 +41,9 @@ OUTLIER_WINDOW = 241
 OUTLIER_Z_THRESHOLD = 8.0
 IRR_VALID_MIN = -100.0
 IRR_VALID_MAX = 10000.0
+PASS_THROUGH_VALUE_BOUNDS: dict[str, tuple[float, float]] = {
+    "TEMP": (-40.0, 60.0),
+}
 PARQUET_CHUNK_SIZE = 200_000
 OUTLIER_REPORT_COLUMNS = [
     "datetime",
@@ -471,8 +474,24 @@ def empty_outlier_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=OUTLIER_REPORT_COLUMNS)
 
 
+def metric_name_for_column(column_name: str) -> str:
+    """Return the logical metric name represented by one output column."""
+    if column_name.endswith(("_mV", "_Irr")):
+        return column_name.rsplit("_", 1)[0]
+    return column_name
+
+
+def value_type_for_column(column_name: str) -> str:
+    """Return the value-type label used in the outlier report."""
+    if column_name.endswith("_mV"):
+        return "mV"
+    if column_name.endswith("_Irr"):
+        return "Irr"
+    return "raw"
+
+
 def detect_outliers_frame(output_csv: Path, columns: list[str], window: int, threshold: float) -> pd.DataFrame:
-    """Return an outlier report using rolling median and MAD per converted series."""
+    """Return an outlier report using rolling median and MAD per selected series."""
     if window < 5:
         raise ValueError("outlier_window must be at least 5.")
     if threshold <= 0:
@@ -499,8 +518,8 @@ def detect_outliers_frame(output_csv: Path, columns: list[str], window: int, thr
         if not mask.any():
             continue
 
-        kind = "mV" if column_name.endswith("_mV") else "Irr"
-        metric = column_name.rsplit("_", 1)[0]
+        kind = value_type_for_column(column_name)
+        metric = metric_name_for_column(column_name)
         outlier_frame = pd.DataFrame(
             {
                 "datetime": frame.loc[mask, "datetime"].dt.strftime(INPUT_TIME_FORMAT),
@@ -522,26 +541,23 @@ def detect_outliers_frame(output_csv: Path, columns: list[str], window: int, thr
     return empty_outlier_frame()
 
 
-def detect_irr_bound_outliers_frame(
+def detect_bound_outliers_frame(
     output_csv: Path,
-    metrics: list[str],
-    min_irr: float = IRR_VALID_MIN,
-    max_irr: float = IRR_VALID_MAX,
+    bounds_by_column: dict[str, tuple[float, float]],
 ) -> pd.DataFrame:
-    """Return irradiance rows that fall outside the allowed absolute range."""
+    """Return rows whose values fall outside a configured absolute range."""
     outlier_frames: list[pd.DataFrame] = []
 
-    for metric_name in metrics:
-        irr_column = f"{metric_name}_Irr"
+    for column_name, (min_value, max_value) in bounds_by_column.items():
         frame = pd.read_csv(
             output_csv,
-            usecols=["datetime", irr_column],
+            usecols=["datetime", column_name],
             parse_dates=["datetime"],
             na_values=["NaN"],
             keep_default_na=True,
         )
-        values = pd.to_numeric(frame[irr_column], errors="coerce")
-        mask = values.notna() & (values.lt(min_irr) | values.gt(max_irr))
+        values = pd.to_numeric(frame[column_name], errors="coerce")
+        mask = values.notna() & (values.lt(min_value) | values.gt(max_value))
         if not mask.any():
             continue
 
@@ -549,14 +565,14 @@ def detect_irr_bound_outliers_frame(
             pd.DataFrame(
                 {
                     "datetime": frame.loc[mask, "datetime"].dt.strftime(INPUT_TIME_FORMAT),
-                    "column": irr_column,
-                    "metric": metric_name,
-                    "value_type": "Irr",
+                    "column": column_name,
+                    "metric": metric_name_for_column(column_name),
+                    "value_type": value_type_for_column(column_name),
                     "value": values.loc[mask],
                     "local_median": float("nan"),
                     "local_mad": float("nan"),
                     "robust_z": float("nan"),
-                    "rule": f"irr_bounds[{min_irr:g},{max_irr:g}]",
+                    "rule": f"{column_name}_bounds[{min_value:g},{max_value:g}]",
                 }
             )
         )
@@ -565,6 +581,24 @@ def detect_irr_bound_outliers_frame(
         return pd.concat(outlier_frames, ignore_index=True).sort_values(["datetime", "column"])
 
     return empty_outlier_frame()
+
+
+def detect_irr_bound_outliers_frame(
+    output_csv: Path,
+    metrics: list[str],
+    min_irr: float = IRR_VALID_MIN,
+    max_irr: float = IRR_VALID_MAX,
+) -> pd.DataFrame:
+    """Return irradiance rows that fall outside the allowed absolute range."""
+    return detect_bound_outliers_frame(
+        output_csv,
+        {f"{metric_name}_Irr": (min_irr, max_irr) for metric_name in metrics},
+    )
+
+
+def detect_pass_through_bound_outliers_frame(output_csv: Path) -> pd.DataFrame:
+    """Return pass-through metric rows that fall outside their allowed ranges."""
+    return detect_bound_outliers_frame(output_csv, PASS_THROUGH_VALUE_BOUNDS)
 
 
 def combine_outlier_frames(*frames: pd.DataFrame) -> pd.DataFrame:
@@ -670,11 +704,12 @@ def apply_outlier_nan_mask(
 
 
 def detect_outliers(output_csv: Path, outliers_output: Path, columns: list[str], window: int, threshold: float) -> int:
-    """Write a combined outlier report for rolling-MAD and irradiance-bound filters."""
+    """Write a combined outlier report for rolling-MAD and absolute-bound filters."""
     metrics = sorted({column_name.rsplit("_", 1)[0] for column_name in columns if column_name.endswith("_Irr")})
     result = combine_outlier_frames(
         detect_outliers_frame(output_csv, columns, window, threshold),
         detect_irr_bound_outliers_frame(output_csv, metrics),
+        detect_pass_through_bound_outliers_frame(output_csv),
     )
     write_outlier_report(outliers_output, result)
     return len(result)
@@ -877,6 +912,7 @@ def main() -> None:
             args.outlier_z_threshold,
         ),
         detect_irr_bound_outliers_frame(args.output, artifacts.converted_metrics),
+        detect_pass_through_bound_outliers_frame(args.output),
     )
     write_outlier_report(outliers_output, outliers_frame)
     cleaned_values = apply_outlier_nan_mask(args.output, build_outlier_lookup(outliers_frame))
