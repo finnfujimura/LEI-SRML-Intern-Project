@@ -8,11 +8,12 @@ inside year-named folders (e.g. ``STW_2020_Process0/``). Each row looks like:
 
     station_id, year, day_of_year, hhmm, measurement_1, measurement_2, ...
 
-The cleaning pipeline (run via ``main()``) performs nine steps:
+The cleaning pipeline performs these steps:
 
   1. Discover all source files under ``Raw Data/STW_*/``.
-  2. Load rows into a SQLite database, dropping the station-ID column and
-     keeping only the first row seen for each (year, day, hhmm) timestamp.
+  2. Parse rows into an in-memory pandas DataFrame, dropping the station-ID
+     column and keeping only the first row seen for each (year, day, hhmm)
+     timestamp.
   3. Write one sorted CSV per year to ``yearly cleaned/``.
   4. For each year, compare observed timestamps against the full 1,440
      valid minute-of-day HHMM values and merge placeholder rows for gaps.
@@ -24,7 +25,6 @@ The cleaning pipeline (run via ``main()``) performs nine steps:
      timestamps remain.
   8. Write a mapped combined CSV using the ``Column Mapping`` worksheet
      from ``STW programs/STW_sitefile_and_mapping.xlsx``.
-  9. Delete temporary SQLite databases.
 
 Key conventions:
   - **HHMM format**: An integer where HH = hours (00-23) and MM = minutes
@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import csv
 import json
-import sqlite3
 import xml.etree.ElementTree as ET
 from bisect import bisect_right
 from dataclasses import asdict, dataclass
@@ -50,6 +49,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 from zipfile import ZipFile
+
+import pandas as pd
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +63,6 @@ YEARLY_CLEANED_DIR = ROOT_DIR / "yearly cleaned"
 REPORTS_DIR = ROOT_DIR / "reports"
 FINAL_OUTPUT_DIR = ROOT_DIR / "final output"
 PLOTS_DIR = ROOT_DIR / "plots"
-WORK_DB = REPORTS_DIR / "_stw_work.sqlite3"
-RECHECK_DB = REPORTS_DIR / "_stw_recheck.sqlite3"
 COLUMN_MAP_WORKBOOK = ROOT_DIR / "STW programs" / "STW_sitefile_and_mapping.xlsx"
 COLUMN_MAP_SHEET_NAME = "Column Mapping"
 COMBINED_CLEANED_FILE = REPORTS_DIR / "stw_combined_cleaned.csv"
@@ -76,6 +75,11 @@ XLSX_NS = {
     "pkgrel": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 DOCREL_ID_ATTR = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+
+# Column layout of the in-memory dedup frame produced by ``ingest_files``.
+# ``row_tail`` keeps the unchanged "year,day,hhmm,meas1,meas2,..." text so the
+# pipeline's CSV outputs stay byte-identical to the original SQLite version.
+DEDUP_FRAME_COLUMNS = ["year", "day", "time", "row_tail"]
 
 
 # ---------------------------------------------------------------------------
@@ -157,65 +161,27 @@ def discover_input_files(base_dir: Path) -> list[Path]:
 
 
 # ---------------------------------------------------------------------------
-# SQLite helpers -- used as a fast deduplication engine
+# Pandas-backed ingestion + deduplication
 # ---------------------------------------------------------------------------
 
-def init_db(db_path: Path) -> sqlite3.Connection:
-    """Create (or recreate) a temporary SQLite database for deduplication.
-
-    The ``dedup_rows`` table uses ``(year, day, time)`` as its primary key so
-    that ``INSERT OR IGNORE`` keeps only the first row seen for each timestamp.
-    """
-    if db_path.exists():
-        db_path.unlink()
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode = WAL;")
-    conn.execute("PRAGMA synchronous = NORMAL;")
-    conn.execute("PRAGMA temp_store = MEMORY;")
-    conn.execute(
-        """
-        CREATE TABLE dedup_rows (
-            year INTEGER NOT NULL,
-            day INTEGER NOT NULL,
-            time INTEGER NOT NULL,
-            row_tail TEXT NOT NULL,
-            PRIMARY KEY (year, day, time)
-        );
-        """
-    )
-    return conn
-
-
-def ingest_files(conn: sqlite3.Connection, files: Iterable[Path], drop_first_col: bool) -> IngestStats:
-    """Parse CSV files and insert unique rows into the database.
+def ingest_files(files: Iterable[Path], drop_first_col: bool) -> tuple[pd.DataFrame, IngestStats]:
+    """Parse raw or cleaned CSV files into a deduplicated DataFrame.
 
     Args:
-        conn: Open SQLite connection with the ``dedup_rows`` table.
         files: Paths to the CSV-like text files to read.
         drop_first_col: If True the first comma-separated field (station ID)
             is stripped before storing the row.  Set to True for raw input
             files and False when re-ingesting already-cleaned files.
 
     Returns:
-        An ``IngestStats`` recording how many rows were seen, kept, or
-        rejected.
-
-    Rows are batched in groups of 10,000 for efficient bulk inserts.
-    Later rows with the same ``(year, day, hhmm)`` timestamp are silently
-    skipped by the ``INSERT OR IGNORE`` strategy. Rows after
-    ``PIPELINE_CUTOFF_DATE`` are excluded from the pipeline scope.
+        ``(df, stats)`` where ``df`` has columns
+        ``[year, day, time, row_tail]`` with one row per unique
+        ``(year, day, time)`` timestamp (first occurrence wins, matching the
+        previous ``INSERT OR IGNORE`` behavior), and ``stats`` records how
+        many rows were seen, kept, or rejected.
     """
     stats = IngestStats()
-    batch: list[tuple[str, int, int, int]] = []
-
-    def flush_batch() -> None:
-        if not batch:
-            return
-        conn.executemany(
-            "INSERT OR IGNORE INTO dedup_rows (row_tail, year, day, time) VALUES (?, ?, ?, ?);",
-            batch,
-        )
-        batch.clear()
+    rows: list[tuple[int, int, int, str]] = []
 
     for f in files:
         stats.files_seen += 1
@@ -237,32 +203,34 @@ def ingest_files(conn: sqlite3.Connection, files: Iterable[Path], drop_first_col
                         continue
                     year = parse_int(parts[1])
                     day = parse_int(parts[2])
-                    time = parse_int(parts[3])
-                    row_tail = ",".join(parts[1:])  # everything after station_id
+                    hhmm = parse_int(parts[3])
+                    row_tail = ",".join(parts[1:])
                 else:
                     if len(parts) < 3:
                         stats.invalid_short += 1
                         continue
                     year = parse_int(parts[0])
                     day = parse_int(parts[1])
-                    time = parse_int(parts[2])
+                    hhmm = parse_int(parts[2])
                     row_tail = ",".join(parts)
 
-                if year is None or day is None or time is None:
+                if year is None or day is None or hhmm is None:
                     stats.invalid_key += 1
                     continue
                 if not row_is_within_pipeline_scope(year, day):
                     stats.filtered_after_cutoff += 1
                     continue
 
-                batch.append((row_tail, year, day, time))
+                rows.append((year, day, hhmm, row_tail))
                 stats.valid_rows += 1
-                if len(batch) >= 10000:
-                    flush_batch()
-        flush_batch()
 
-    conn.commit()
-    return stats
+    df = pd.DataFrame(rows, columns=DEDUP_FRAME_COLUMNS)
+    if not df.empty:
+        # Match SQLite's INSERT OR IGNORE: first occurrence per timestamp wins.
+        # File-sort + within-file line order is preserved by the list above, so
+        # a stable drop_duplicates on (year, day, time) is equivalent.
+        df = df.drop_duplicates(subset=["year", "day", "time"], keep="first").reset_index(drop=True)
+    return df, stats
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +281,7 @@ def minute_index_to_hhmm(idx: int) -> int:
 
 # Pre-built list of all 1,440 valid HHMM values in chronological order.
 VALID_HHMM_TIMES = [minute_index_to_hhmm(i) for i in range(1440)]
+VALID_HHMM_SET = set(VALID_HHMM_TIMES)
 
 
 def compress_hhmm_ranges(values: list[int]) -> str:
@@ -497,24 +466,27 @@ def merge_missing_rows_into_csv(
 # Writing cleaned output files
 # ---------------------------------------------------------------------------
 
-def get_years(conn: sqlite3.Connection) -> list[int]:
-    """Return a sorted list of all distinct years in the database."""
-    rows = conn.execute("SELECT DISTINCT year FROM dedup_rows ORDER BY year;").fetchall()
-    return [r[0] for r in rows]
+def get_years(df: pd.DataFrame) -> list[int]:
+    """Return a sorted list of all distinct years in *df*."""
+    if df.empty:
+        return []
+    return sorted(int(year) for year in df["year"].unique())
 
 
-def write_scope_file(conn: sqlite3.Connection, years: list[int], out_path: Path) -> int:
+def write_scope_file(df: pd.DataFrame, years: list[int], out_path: Path) -> int:
     """Write all rows for the given *years* to *out_path*, sorted by
     (year, day, time).  Returns the number of rows written."""
-    placeholders = ",".join("?" for _ in years)
-    query = (
-        "SELECT row_tail FROM dedup_rows "
-        f"WHERE year IN ({placeholders}) "
-        "ORDER BY year, day, time, row_tail;"
-    )
+    if df.empty or not years:
+        out_path.write_text("", encoding="utf-8")
+        return 0
+    subset = df[df["year"].isin(years)]
+    if subset.empty:
+        out_path.write_text("", encoding="utf-8")
+        return 0
+    subset = subset.sort_values(by=["year", "day", "time"], kind="stable")
     rows_written = 0
     with out_path.open("w", encoding="utf-8", newline="") as handle:
-        for (row_tail,) in conn.execute(query, years):
+        for row_tail in subset["row_tail"]:
             handle.write(row_tail + "\n")
             rows_written += 1
     return rows_written
@@ -534,7 +506,7 @@ def remove_stale_year_files(out_dir: Path, active_years: Iterable[int]) -> list[
     return removed
 
 
-def write_year_files(conn: sqlite3.Connection, years: list[int], out_dir: Path) -> dict[int, int]:
+def write_year_files(df: pd.DataFrame, years: list[int], out_dir: Path) -> dict[int, int]:
     """Write one ``stw_<year>_cleaned.csv`` file per year.
 
     Returns a dict mapping year -> row count.
@@ -542,7 +514,7 @@ def write_year_files(conn: sqlite3.Connection, years: list[int], out_dir: Path) 
     written: dict[int, int] = {}
     for year in years:
         out_path = out_dir / f"stw_{year}_cleaned.csv"
-        count = write_scope_file(conn, [year], out_path)
+        count = write_scope_file(df, [year], out_path)
         written[year] = count
     return written
 
@@ -610,11 +582,11 @@ def write_formatted_missing_timestamps(log_path: Path, missing_rows: Iterable[tu
 
 
 def log_missing_timestamps(
-    conn: sqlite3.Connection,
+    df: pd.DataFrame,
     years: list[int],
     log_path: Path | None = None,
 ) -> tuple[MissingSummary, list[tuple[int, int, str]]]:
-    """Scan the database for gaps in minute-resolution coverage.
+    """Scan *df* for gaps in minute-resolution coverage.
 
     For every (year, day) group the function builds the set of observed HHMM
     timestamps and compares it against the full 1,440-value reference list.
@@ -637,59 +609,31 @@ def log_missing_timestamps(
         A ``(summary, missing_rows)`` tuple where ``missing_rows`` contains
         ``(year, day_of_year, compressed_ranges)`` entries.
     """
-    placeholders = ",".join("?" for _ in years)
-    query = (
-        "SELECT year, day, time FROM dedup_rows "
-        f"WHERE year IN ({placeholders}) "
-        "ORDER BY year, day, time;"
-    )
-
     summary = MissingSummary()
     missing_rows: list[tuple[int, int, str]] = []
-    current_key: tuple[int, int] | None = None  # (year, day) being accumulated
-    times_seen: set[int] = set()                 # valid HHMM values seen so far
-    out_of_range = 0                             # invalid HHMM count in group
-    first_valid_key: tuple[int, int] | None = None   # used for first-day grace
+
+    scope = df[df["year"].isin(years)] if not df.empty else df
+    if scope.empty:
+        if log_path is not None:
+            write_missing_timestamps_log(log_path, missing_rows)
+        return summary, missing_rows
+
+    scope = scope.sort_values(by=["year", "day", "time"], kind="stable").reset_index(drop=True)
+
+    # Boundary-grace anchors: first and last *valid* HHMM in the whole scope.
+    valid_mask = scope["time"].isin(VALID_HHMM_SET)
+    valid_scope = scope[valid_mask]
+    first_valid_key: tuple[int, int] | None = None
     first_valid_time: int | None = None
-    last_valid_key: tuple[int, int] | None = None    # used for last-day grace
+    last_valid_key: tuple[int, int] | None = None
     last_valid_time: int | None = None
-
-    def find_boundary_valid_time(descending: bool) -> tuple[tuple[int, int] | None, int | None]:
-        """Find the first or last valid timestamp in the requested direction."""
-        order = "DESC" if descending else "ASC"
-        boundary_query = (
-            "SELECT year, day, time FROM dedup_rows "
-            f"WHERE year IN ({placeholders}) "
-            f"ORDER BY year {order}, day {order}, time {order};"
-        )
-        for year, day, time in conn.execute(boundary_query, years):
-            if is_valid_hhmm(time):
-                return (year, day), time
-        return None, None
-
-    first_valid_key, first_valid_time = find_boundary_valid_time(descending=False)
-    last_valid_key, last_valid_time = find_boundary_valid_time(descending=True)
-
-    def flush_group() -> None:
-        """Finish processing the current (year, day) group."""
-        nonlocal current_key, times_seen, out_of_range
-        if current_key is None:
-            return
-        year, day = current_key
-        missing = [t for t in VALID_HHMM_TIMES if t not in times_seen]
-        # Boundary grace: don't flag timestamps outside the observed window.
-        if current_key == first_valid_key and first_valid_time is not None:
-            missing = [t for t in missing if t >= first_valid_time]
-        if current_key == last_valid_key and last_valid_time is not None:
-            missing = [t for t in missing if t <= last_valid_time]
-        summary.days_total += 1
-        summary.missing_timestamps_total += len(missing)
-        summary.out_of_range_timestamps += out_of_range
-        if missing:
-            summary.days_with_missing += 1
-            missing_rows.append((year, day, compress_hhmm_ranges(missing)))
-        times_seen = set()
-        out_of_range = 0
+    if not valid_scope.empty:
+        first_row = valid_scope.iloc[0]
+        last_row = valid_scope.iloc[-1]
+        first_valid_key = (int(first_row["year"]), int(first_row["day"]))
+        first_valid_time = int(first_row["time"])
+        last_valid_key = (int(last_row["year"]), int(last_row["day"]))
+        last_valid_time = int(last_row["time"])
 
     def log_fully_missing_day(year: int, day: int) -> None:
         """Record a day with zero observations (all 1,440 timestamps missing)."""
@@ -698,23 +642,44 @@ def log_missing_timestamps(
         summary.missing_timestamps_total += len(VALID_HHMM_TIMES)
         missing_rows.append((year, day, "1-2400"))
 
-    for year, day, time in conn.execute(query, years):
-        key = (year, day)
-        if current_key != key:
-            previous_key = current_key
-            flush_group()
-            # Fill in entirely missing days between consecutive observed days.
-            if previous_key is not None:
-                prev_year, prev_day = previous_key
-                if year == prev_year and day > prev_day + 1:
-                    for missing_day in range(prev_day + 1, day):
-                        log_fully_missing_day(year, missing_day)
-            current_key = key
-        if is_valid_hhmm(time):
-            times_seen.add(time)
-        else:
-            out_of_range += 1
-    flush_group()
+    previous_key: tuple[int, int] | None = None
+
+    for (year_val, day_val), group in scope.groupby(["year", "day"], sort=True):
+        year = int(year_val)
+        day = int(day_val)
+
+        # Fill entirely missing days between consecutive observed days within
+        # the same year.  Cross-year gaps are intentionally not filled because
+        # day-of-year numbering resets.
+        if previous_key is not None:
+            prev_year, prev_day = previous_key
+            if year == prev_year and day > prev_day + 1:
+                for missing_day in range(prev_day + 1, day):
+                    log_fully_missing_day(year, missing_day)
+
+        times_seen: set[int] = set()
+        out_of_range = 0
+        for raw_time in group["time"]:
+            t = int(raw_time)
+            if is_valid_hhmm(t):
+                times_seen.add(t)
+            else:
+                out_of_range += 1
+
+        missing = [t for t in VALID_HHMM_TIMES if t not in times_seen]
+        if (year, day) == first_valid_key and first_valid_time is not None:
+            missing = [t for t in missing if t >= first_valid_time]
+        if (year, day) == last_valid_key and last_valid_time is not None:
+            missing = [t for t in missing if t <= last_valid_time]
+
+        summary.days_total += 1
+        summary.missing_timestamps_total += len(missing)
+        summary.out_of_range_timestamps += out_of_range
+        if missing:
+            summary.days_with_missing += 1
+            missing_rows.append((year, day, compress_hhmm_ranges(missing)))
+
+        previous_key = (year, day)
 
     if log_path is not None:
         write_missing_timestamps_log(log_path, missing_rows)
@@ -780,18 +745,14 @@ def recheck_combined_file(combined_file: Path, missing_combined_dir: Path) -> tu
     Returns:
         ``(total_rows, unique_rows, missing_summary)``
     """
-    conn = init_db(RECHECK_DB)
-    stats = ingest_files(conn, [combined_file], drop_first_col=False)
-    unique_rows = conn.execute("SELECT COUNT(*) FROM dedup_rows;").fetchone()[0]
-    years = get_years(conn)
+    df, stats = ingest_files([combined_file], drop_first_col=False)
+    unique_rows = len(df)
+    years = get_years(df)
     missing, _ = log_missing_timestamps(
-        conn,
+        df,
         years,
         missing_combined_dir / "missing_timestamps_combined_recheck.csv",
     )
-    conn.close()
-    if RECHECK_DB.exists():
-        RECHECK_DB.unlink()
     return stats.valid_rows, unique_rows, missing
 
 
@@ -1016,10 +977,6 @@ def write_mapped_combined_file(input_path: Path, workbook_path: Path, output_pat
     return rows_written
 
 # ---------------------------------------------------------------------------
-# Main pipeline
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # Split-pipeline state helpers and step runners
 # ---------------------------------------------------------------------------
 
@@ -1057,17 +1014,11 @@ def run_step_01_ingest_raw_to_yearly_cleaned() -> None:
     ensure_pipeline_dirs()
     print("[Step 1/6] Ingesting raw data and writing yearly cleaned files...", flush=True)
     files = discover_input_files(RAW_DATA_DIR)
-    conn = init_db(WORK_DB)
-    try:
-        ingest_stats = ingest_files(conn, files, drop_first_col=True)
-        unique_rows = conn.execute("SELECT COUNT(*) FROM dedup_rows;").fetchone()[0]
-        years = get_years(conn)
-        removed_yearly_files = remove_stale_year_files(YEARLY_CLEANED_DIR, years)
-        year_counts = write_year_files(conn, years, YEARLY_CLEANED_DIR)
-    finally:
-        conn.close()
-        if WORK_DB.exists():
-            WORK_DB.unlink()
+    df, ingest_stats = ingest_files(files, drop_first_col=True)
+    unique_rows = len(df)
+    years = get_years(df)
+    removed_yearly_files = remove_stale_year_files(YEARLY_CLEANED_DIR, years)
+    year_counts = write_year_files(df, years, YEARLY_CLEANED_DIR)
 
     state = {
         "pipeline_cutoff_date": PIPELINE_CUTOFF_DATE.isoformat(),
@@ -1097,25 +1048,20 @@ def run_step_02_fill_yearly_gaps() -> None:
     if not years:
         raise ValueError("pipeline_state.json does not contain years. Run step 01 first.")
 
-    conn = init_db(WORK_DB)
-    try:
-        yearly_files = [YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv" for year in years]
-        ingest_files(conn, yearly_files, drop_first_col=False)
-        yearly_rows_added = 0
-        print("[Step 2/6] Filling yearly timestamp gaps...", flush=True)
-        for year in years:
-            yearly_missing, yearly_missing_rows = log_missing_timestamps(conn, [year])
-            yearly_file_path = YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv"
-            added = merge_missing_rows_into_csv(yearly_file_path, yearly_missing_rows)
-            yearly_rows_added += added
-            print(
-                f"Year {year}: {yearly_missing.missing_timestamps_total} timestamps missing; {added} rows merged.",
-                flush=True,
-            )
-    finally:
-        conn.close()
-        if WORK_DB.exists():
-            WORK_DB.unlink()
+    yearly_files = [YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv" for year in years]
+    df, _ = ingest_files(yearly_files, drop_first_col=False)
+
+    yearly_rows_added = 0
+    print("[Step 2/6] Filling yearly timestamp gaps...", flush=True)
+    for year in years:
+        yearly_missing, yearly_missing_rows = log_missing_timestamps(df, [year])
+        yearly_file_path = YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv"
+        added = merge_missing_rows_into_csv(yearly_file_path, yearly_missing_rows)
+        yearly_rows_added += added
+        print(
+            f"Year {year}: {yearly_missing.missing_timestamps_total} timestamps missing; {added} rows merged.",
+            flush=True,
+        )
 
     state["yearly_rows_added"] = yearly_rows_added
     write_pipeline_state(state)
@@ -1131,26 +1077,20 @@ def run_step_03_build_combined_cleaned() -> None:
     if not years or not year_counts:
         raise ValueError("pipeline_state.json is missing years/year_counts. Run step 01 first.")
 
-    conn = init_db(WORK_DB)
-    try:
-        yearly_files = [YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv" for year in years]
-        ingest_files(conn, yearly_files, drop_first_col=False)
-        combined_years = select_combined_years(years, year_counts)
-        combined_rows = write_scope_file(conn, combined_years, COMBINED_CLEANED_FILE)
-        combined_missing_log_path = REPORTS_DIR / "missing_timestamps_combined.csv"
-        combined_missing_formatted_path = REPORTS_DIR / "missing_timestamps_combined_formatted.txt"
-        combined_missing, combined_missing_rows = log_missing_timestamps(
-            conn,
-            combined_years,
-            combined_missing_log_path,
-        )
-        write_formatted_missing_timestamps(combined_missing_formatted_path, combined_missing_rows)
-        combined_rows_added = merge_missing_rows_into_csv(COMBINED_CLEANED_FILE, combined_missing_rows)
-        combined_rows += combined_rows_added
-    finally:
-        conn.close()
-        if WORK_DB.exists():
-            WORK_DB.unlink()
+    yearly_files = [YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv" for year in years]
+    df, _ = ingest_files(yearly_files, drop_first_col=False)
+    combined_years = select_combined_years(years, year_counts)
+    combined_rows = write_scope_file(df, combined_years, COMBINED_CLEANED_FILE)
+    combined_missing_log_path = REPORTS_DIR / "missing_timestamps_combined.csv"
+    combined_missing_formatted_path = REPORTS_DIR / "missing_timestamps_combined_formatted.txt"
+    combined_missing, combined_missing_rows = log_missing_timestamps(
+        df,
+        combined_years,
+        combined_missing_log_path,
+    )
+    write_formatted_missing_timestamps(combined_missing_formatted_path, combined_missing_rows)
+    combined_rows_added = merge_missing_rows_into_csv(COMBINED_CLEANED_FILE, combined_missing_rows)
+    combined_rows += combined_rows_added
 
     state["combined_years"] = combined_years
     state["combined_rows"] = combined_rows
