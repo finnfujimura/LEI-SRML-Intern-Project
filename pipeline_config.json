@@ -1,0 +1,27 @@
+{
+  "raw_data_dir": "Raw Data",
+  "yearly_cleaned_dir": "yearly cleaned",
+  "reports_dir": "reports",
+  "final_output_dir": "final output",
+  "plots_dir": "plots",
+  "column_map_workbook": "STW programs/STW_sitefile_and_mapping.xlsx",
+
+  "column_map_sheet_name": "Column Mapping",
+
+  "combined_cleaned_file_name": "stw_combined_cleaned.csv",
+  "mapped_combined_file_name": "stw_combined_mapped.csv",
+  "pipeline_state_file_name": "pipeline_state.json",
+  "irr_irregularity_events_name": "stw_irr_irregularity_events.csv",
+  "irr_irregularity_plot_index_name": "stw_irr_irregularity_plot_index.csv",
+
+  "mv_irr_csv_name": "stw_mV_Irr.csv",
+  "mv_irr_parquet_name": "stw_mV_Irr.parquet",
+
+  "mv_irr_explorer_notebook_name": "stw_mV_Irr_explorer.ipynb",
+  "irr_irregularity_plots_subdir": "irr_irregularity_event_plots",
+
+  "input_file_folder_prefix": "STW_",
+  "yearly_file_name_template": "stw_{year}_cleaned.csv",
+
+  "force_nan": []
+}

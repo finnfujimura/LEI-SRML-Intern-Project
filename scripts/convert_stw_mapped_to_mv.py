@@ -26,14 +26,17 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from pipeline_config import load_config
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent
-DEFAULT_INPUT = ROOT_DIR / "reports" / "stw_combined_mapped.csv"
-DEFAULT_WORKBOOK = ROOT_DIR / "STW programs" / "STW_sitefile_and_mapping.xlsx"
-DEFAULT_OUTPUT = ROOT_DIR / "final output" / "stw_mV_Irr.csv"
-DEFAULT_PARQUET_OUTPUT = ROOT_DIR / "final output" / "stw_mV_Irr.parquet"
-DEFAULT_NOTEBOOK_OUTPUT = ROOT_DIR / "plots" / "stw_mV_Irr_explorer.ipynb"
+_CONFIG = load_config()
+DEFAULT_INPUT = _CONFIG.mapped_combined_file
+DEFAULT_WORKBOOK = _CONFIG.column_map_workbook
+DEFAULT_OUTPUT = _CONFIG.mv_irr_csv
+DEFAULT_PARQUET_OUTPUT = _CONFIG.mv_irr_parquet
+DEFAULT_NOTEBOOK_OUTPUT = _CONFIG.mv_irr_explorer_notebook
 INPUT_TIME_FORMAT = "%Y/%m/%d %H:%M"
 PASS_THROUGH_METRICS = {"TEMP", "SZA", "AZM"}
 EXCLUDED_METRICS = {"PIR"}
@@ -392,6 +395,53 @@ def write_calibration_change_log(log_path: Path, timelines: dict[str, MetricConv
     log_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+def _build_force_nan_intervals(
+    rules: tuple,
+    input_columns: list[str],
+) -> tuple[dict[str, list[tuple[datetime, datetime]]], int]:
+    """Build a per-column list of (start, end) intervals from ``force_nan`` rules.
+
+    Validates that every column named in the rules is present in the mapped
+    CSV and not in EXCLUDED_METRICS, so misconfigured rules surface as errors
+    instead of silently no-oping.
+
+    Returns ``(intervals_by_column, total_rule_columns)``.
+    """
+    intervals: dict[str, list[tuple[datetime, datetime]]] = {}
+    referenced: set[str] = set()
+    for rule in rules:
+        for column in rule.columns:
+            referenced.add(column)
+            intervals.setdefault(column, []).append((rule.start, rule.end))
+
+    available = {col for col in input_columns if col != "datetime"}
+    targetable = available - EXCLUDED_METRICS
+    missing = sorted(referenced - available)
+    if missing:
+        raise ValueError(
+            f"force_nan references columns not present in the mapped CSV: {missing}. "
+            f"Available columns: {sorted(targetable)}."
+        )
+    excluded_hits = sorted(referenced & EXCLUDED_METRICS)
+    if excluded_hits:
+        raise ValueError(
+            f"force_nan references excluded columns {excluded_hits} that are dropped "
+            f"during conversion; remove the rule or include them in the output first."
+        )
+    return intervals, len(referenced)
+
+
+def _datetime_in_intervals(
+    dt: datetime,
+    intervals: list[tuple[datetime, datetime]],
+) -> bool:
+    """Return True when *dt* falls inside any of the inclusive intervals."""
+    for start, end in intervals:
+        if start <= dt <= end:
+            return True
+    return False
+
+
 def convert_stw_mapped_to_mv_irr(
     input_path: Path,
     workbook_path: Path,
@@ -409,6 +459,10 @@ def convert_stw_mapped_to_mv_irr(
             raise ValueError(f"{input_path} must contain a 'datetime' column.")
 
         output_columns, timelines, converted_metrics = build_output_columns(reader.fieldnames, workbook_path)
+        force_nan_intervals, force_nan_columns = _build_force_nan_intervals(
+            _CONFIG.force_nan_rules, list(reader.fieldnames)
+        )
+        force_nan_cells = 0
 
         rows_written = 0
         with output_path.open("w", encoding="utf-8", newline="") as dst:
@@ -433,6 +487,11 @@ def convert_stw_mapped_to_mv_irr(
                         continue
 
                     cell_value = (row.get(column_name, "") or "").strip()
+                    column_intervals = force_nan_intervals.get(column_name)
+                    if column_intervals and _datetime_in_intervals(row_dt, column_intervals):
+                        if not is_nan_like(cell_value):
+                            force_nan_cells += 1
+                        cell_value = ""
                     if column_name in PASS_THROUGH_METRICS:
                         output_row[column_name] = "NaN" if is_nan_like(cell_value) else cell_value
                         continue
@@ -461,6 +520,12 @@ def convert_stw_mapped_to_mv_irr(
                 rows_written += 1
 
     write_calibration_change_log(log_output, timelines)
+    if _CONFIG.force_nan_rules:
+        print(
+            f"force_nan: applied {len(_CONFIG.force_nan_rules)} rule(s) across "
+            f"{force_nan_columns} column(s); nulled {force_nan_cells} non-NaN cells.",
+            flush=True,
+        )
     return ConversionArtifacts(
         rows_written=rows_written,
         log_output=log_output,

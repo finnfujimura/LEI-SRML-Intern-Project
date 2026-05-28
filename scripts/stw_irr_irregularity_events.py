@@ -15,16 +15,19 @@ import pandas as pd
 
 try:
     from stw_pipeline_common import COLUMN_MAP_WORKBOOK, load_column_map_workbook
+    from pipeline_config import load_config
 except ModuleNotFoundError:  # pragma: no cover - supports imports from repo root/notebooks.
     from scripts.stw_pipeline_common import COLUMN_MAP_WORKBOOK, load_column_map_workbook
+    from scripts.pipeline_config import load_config
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent
-DEFAULT_PARQUET_INPUT = ROOT_DIR / "final output" / "stw_mV_Irr.parquet"
-DEFAULT_EVENTS_OUTPUT = ROOT_DIR / "reports" / "stw_irr_irregularity_events.csv"
-DEFAULT_PLOT_INDEX_OUTPUT = ROOT_DIR / "reports" / "stw_irr_irregularity_plot_index.csv"
-DEFAULT_PLOTS_DIR = ROOT_DIR / "plots" / "irr_irregularity_event_plots"
+_CONFIG = load_config()
+DEFAULT_PARQUET_INPUT = _CONFIG.mv_irr_parquet
+DEFAULT_EVENTS_OUTPUT = _CONFIG.irr_irregularity_events_file
+DEFAULT_PLOT_INDEX_OUTPUT = _CONFIG.irr_irregularity_plot_index_file
+DEFAULT_PLOTS_DIR = _CONFIG.irr_irregularity_plots_dir
 
 # Default mode: focus on large, sustained windows that suggest a bad column map.
 DEFAULT_MODE = "mapping_window"

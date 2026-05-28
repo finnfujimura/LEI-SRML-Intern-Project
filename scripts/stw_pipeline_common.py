@@ -52,22 +52,28 @@ from zipfile import ZipFile
 
 import pandas as pd
 
+from pipeline_config import load_config
+
 
 # ---------------------------------------------------------------------------
-# Directory layout -- all paths are relative to the repo root.
+# Directory layout -- sourced from ``pipeline_config.json`` (with code-level
+# defaults as fallback).  The module-level constants below are kept for
+# backwards compatibility with callers that ``from stw_pipeline_common import``
+# specific paths; new code should prefer ``CONFIG`` directly.
 # ---------------------------------------------------------------------------
+CONFIG = load_config()
 SCRIPT_DIR = Path(__file__).resolve().parent        # .../scripts/
 ROOT_DIR = SCRIPT_DIR.parent                      # repo root
-RAW_DATA_DIR = ROOT_DIR / "Raw Data"
-YEARLY_CLEANED_DIR = ROOT_DIR / "yearly cleaned"
-REPORTS_DIR = ROOT_DIR / "reports"
-FINAL_OUTPUT_DIR = ROOT_DIR / "final output"
-PLOTS_DIR = ROOT_DIR / "plots"
-COLUMN_MAP_WORKBOOK = ROOT_DIR / "STW programs" / "STW_sitefile_and_mapping.xlsx"
-COLUMN_MAP_SHEET_NAME = "Column Mapping"
-COMBINED_CLEANED_FILE = REPORTS_DIR / "stw_combined_cleaned.csv"
-MAPPED_COMBINED_FILE = REPORTS_DIR / "stw_combined_mapped.csv"
-PIPELINE_STATE_FILE = REPORTS_DIR / "pipeline_state.json"
+RAW_DATA_DIR = CONFIG.raw_data_dir
+YEARLY_CLEANED_DIR = CONFIG.yearly_cleaned_dir
+REPORTS_DIR = CONFIG.reports_dir
+FINAL_OUTPUT_DIR = CONFIG.final_output_dir
+PLOTS_DIR = CONFIG.plots_dir
+COLUMN_MAP_WORKBOOK = CONFIG.column_map_workbook
+COLUMN_MAP_SHEET_NAME = CONFIG.column_map_sheet_name
+COMBINED_CLEANED_FILE = CONFIG.combined_cleaned_file
+MAPPED_COMBINED_FILE = CONFIG.mapped_combined_file
+PIPELINE_STATE_FILE = CONFIG.pipeline_state_file
 MAPPED_EXCLUDED_METRICS = {"PIR"}
 PIPELINE_CUTOFF_DATE = date(2024, 8, 31)
 XLSX_NS = {
@@ -146,16 +152,18 @@ def row_is_within_pipeline_scope(year: int, day_of_year: int) -> bool:
 
 
 def discover_input_files(base_dir: Path) -> list[Path]:
-    """Find all raw data files inside ``STW_*`` folders under *base_dir*.
+    """Find all raw data files inside folders matching the configured prefix.
 
-    Only regular files whose path contains a directory component starting
-    with ``STW_`` are included.  Results are sorted by path for determinism.
+    Only regular files whose path contains a directory component starting with
+    ``CONFIG.input_file_folder_prefix`` (default ``"STW_"``) are included.
+    Results are sorted by path for determinism.
     """
+    prefix = CONFIG.input_file_folder_prefix
     files: list[Path] = []
     for f in sorted(base_dir.rglob("*")):
         if not f.is_file():
             continue
-        if any(part.startswith("STW_") for part in f.parts):
+        if any(part.startswith(prefix) for part in f.parts):
             files.append(f)
     return files
 
@@ -492,13 +500,23 @@ def write_scope_file(df: pd.DataFrame, years: list[int], out_path: Path) -> int:
     return rows_written
 
 
+def _yearly_file_name(year: int) -> str:
+    """Render the configured yearly-file template for *year*."""
+    return CONFIG.yearly_file_name_template.format(year=year)
+
+
+def _yearly_file_glob() -> str:
+    """Glob pattern that matches every rendered yearly file name."""
+    return CONFIG.yearly_file_name_template.replace("{year}", "*")
+
+
 def remove_stale_year_files(out_dir: Path, active_years: Iterable[int]) -> list[Path]:
     """Delete yearly cleaned CSVs that are outside the current pipeline scope."""
-    active_names = {f"stw_{year}_cleaned.csv" for year in active_years}
+    active_names = {_yearly_file_name(year) for year in active_years}
     removed: list[Path] = []
     if not out_dir.exists():
         return removed
-    for path in sorted(out_dir.glob("stw_*_cleaned.csv")):
+    for path in sorted(out_dir.glob(_yearly_file_glob())):
         if path.name in active_names:
             continue
         path.unlink()
@@ -507,13 +525,13 @@ def remove_stale_year_files(out_dir: Path, active_years: Iterable[int]) -> list[
 
 
 def write_year_files(df: pd.DataFrame, years: list[int], out_dir: Path) -> dict[int, int]:
-    """Write one ``stw_<year>_cleaned.csv`` file per year.
+    """Write one yearly cleaned CSV per year (filename from the config template).
 
     Returns a dict mapping year -> row count.
     """
     written: dict[int, int] = {}
     for year in years:
-        out_path = out_dir / f"stw_{year}_cleaned.csv"
+        out_path = out_dir / _yearly_file_name(year)
         count = write_scope_file(df, [year], out_path)
         written[year] = count
     return written
@@ -1048,14 +1066,14 @@ def run_step_02_fill_yearly_gaps() -> None:
     if not years:
         raise ValueError("pipeline_state.json does not contain years. Run step 01 first.")
 
-    yearly_files = [YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv" for year in years]
+    yearly_files = [YEARLY_CLEANED_DIR / _yearly_file_name(year) for year in years]
     df, _ = ingest_files(yearly_files, drop_first_col=False)
 
     yearly_rows_added = 0
     print("[Step 2/6] Filling yearly timestamp gaps...", flush=True)
     for year in years:
         yearly_missing, yearly_missing_rows = log_missing_timestamps(df, [year])
-        yearly_file_path = YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv"
+        yearly_file_path = YEARLY_CLEANED_DIR / _yearly_file_name(year)
         added = merge_missing_rows_into_csv(yearly_file_path, yearly_missing_rows)
         yearly_rows_added += added
         print(
@@ -1077,7 +1095,7 @@ def run_step_03_build_combined_cleaned() -> None:
     if not years or not year_counts:
         raise ValueError("pipeline_state.json is missing years/year_counts. Run step 01 first.")
 
-    yearly_files = [YEARLY_CLEANED_DIR / f"stw_{year}_cleaned.csv" for year in years]
+    yearly_files = [YEARLY_CLEANED_DIR / _yearly_file_name(year) for year in years]
     df, _ = ingest_files(yearly_files, drop_first_col=False)
     combined_years = select_combined_years(years, year_counts)
     combined_rows = write_scope_file(df, combined_years, COMBINED_CLEANED_FILE)

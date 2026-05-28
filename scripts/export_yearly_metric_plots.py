@@ -24,6 +24,9 @@ from stw_metric_plot_notebook_common import (  # noqa: E402
     load_metric,
     normalize_metrics,
 )
+from pipeline_config import load_config  # noqa: E402
+
+_CONFIG = load_config()
 
 
 OUTPUT_DIRS = {
@@ -54,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--parquet-path",
         type=Path,
-        default=ROOT_DIR / "final output" / "stw_mV_Irr.parquet",
-        help="Source parquet file. Defaults to final output/stw_mV_Irr.parquet.",
+        default=_CONFIG.mv_irr_parquet,
+        help="Source parquet file. Defaults to the path resolved from pipeline_config.json.",
     )
     parser.add_argument(
         "--dpi",
