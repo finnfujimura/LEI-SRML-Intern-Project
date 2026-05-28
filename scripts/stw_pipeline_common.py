@@ -75,7 +75,7 @@ COMBINED_CLEANED_FILE = CONFIG.combined_cleaned_file
 MAPPED_COMBINED_FILE = CONFIG.mapped_combined_file
 PIPELINE_STATE_FILE = CONFIG.pipeline_state_file
 MAPPED_EXCLUDED_METRICS = {"PIR"}
-PIPELINE_CUTOFF_DATE = date(2024, 8, 31)
+PIPELINE_CUTOFF_DATE = CONFIG.pipeline_cutoff_date
 XLSX_NS = {
     "main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
     "pkgrel": "http://schemas.openxmlformats.org/package/2006/relationships",

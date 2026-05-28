@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -83,7 +83,11 @@ _PATH_KEYS: frozenset[str] = frozenset({
 })
 
 # Keys handled by dedicated parsers rather than the generic string/path path.
-_SPECIAL_KEYS: frozenset[str] = frozenset({"force_nan"})
+_SPECIAL_KEYS: frozenset[str] = frozenset({"force_nan", "pipeline_cutoff_date"})
+
+# Default pipeline cutoff date: rows observed after this date are skipped at
+# ingest.  Adjustable via ``pipeline_cutoff_date`` in pipeline_config.json.
+_DEFAULT_CUTOFF_DATE = "2024-08-31"
 
 # Allowed top-level keys = string defaults + specially-handled keys.
 _ALLOWED_KEYS: frozenset[str] = frozenset(_DEFAULTS) | _SPECIAL_KEYS
@@ -143,6 +147,7 @@ class PipelineConfig:
     input_file_folder_prefix: str
     yearly_file_name_template: str
 
+    pipeline_cutoff_date: date = date(2024, 8, 31)
     force_nan_rules: tuple[ForceNanRule, ...] = field(default_factory=tuple)
 
     # -- Convenience composed paths ---------------------------------------
@@ -239,6 +244,22 @@ def _parse_rule_datetime(value: object, where: str, *, is_end: bool) -> datetime
     if is_end:
         return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
     return parsed
+
+
+def _parse_cutoff_date(raw: object, source: object) -> date:
+    """Parse the ``pipeline_cutoff_date`` config value into a date."""
+    if raw is None:
+        raw = _DEFAULT_CUTOFF_DATE
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            f"{source}: 'pipeline_cutoff_date' must be a 'YYYY-MM-DD' string, got {raw!r}."
+        )
+    try:
+        return datetime.strptime(raw.strip(), _DATE_ONLY_FORMAT).date()
+    except ValueError as exc:
+        raise ValueError(
+            f"{source}: invalid 'pipeline_cutoff_date' {raw!r}. Expected 'YYYY-MM-DD'."
+        ) from exc
 
 
 def _parse_force_nan_rules(raw: object, source: object) -> tuple[ForceNanRule, ...]:
@@ -346,6 +367,9 @@ def load_config() -> PipelineConfig:
                 )
             merged[key] = raw_value
 
+    merged["pipeline_cutoff_date"] = _parse_cutoff_date(
+        overrides.get("pipeline_cutoff_date"), source_label
+    )
     merged["force_nan_rules"] = _parse_force_nan_rules(
         overrides.get("force_nan"), source_label
     )

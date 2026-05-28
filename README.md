@@ -162,6 +162,13 @@ paths, and point at it:
 STW_CONFIG=/path/to/my_config.json python run_stw_pipeline.py
 ```
 
+### Cutoff date
+
+`pipeline_cutoff_date` (default `"2024-08-31"`, format `YYYY-MM-DD`) sets the
+last observation date the pipeline keeps; rows observed after it are skipped at
+ingest. Edit it in `pipeline_config.json` to extend or shrink the range — an
+invalid date errors loudly at startup.
+
 ### `force_nan` — manually blanking bad windows
 
 `pipeline_config.json` accepts an optional `force_nan` list. Each rule nulls
@@ -191,9 +198,9 @@ ships with an empty list.
   Valid values run 0001–2359 plus the special `2400` (end-of-day midnight),
   giving 1,440 timestamps per day.
 - **Cutoff date** — The pipeline scopes the dataset to **2024-08-31 and
-  earlier**; later rows are skipped at ingest. This is currently a hard-coded
-  constant (`PIPELINE_CUTOFF_DATE` in `stw_pipeline_common.py`), *not* a config
-  value — change it there if you extend the range.
+  earlier**; later rows are skipped at ingest. This is configurable via
+  `pipeline_cutoff_date` in `pipeline_config.json` (see
+  [Configuration](#4-configuration)) — change it to extend or shrink the range.
 - **Deduplication** — Key is `(year, day, hhmm)`. First row seen wins.
 - **Boundary grace** — On the first/last day of a scope, timestamps before the
   first / after the last observed reading are not counted as missing.
@@ -263,9 +270,10 @@ python scripts/07_detect_irr_irregularity_events.py --mode first_difference
 ## 8. Notes for the next maintainer
 
 - **Edit logic in the heavy modules**, not the numbered wrappers in `scripts/`.
-- The cutoff date and the outlier thresholds are **constants in code**, not in
-  `pipeline_config.json` — search for `PIPELINE_CUTOFF_DATE`,
-  `OUTLIER_WINDOW`, `OUTLIER_Z_THRESHOLD` if you need to change them.
+- The cutoff date is configurable (`pipeline_cutoff_date` in
+  `pipeline_config.json`), but the **outlier thresholds are still constants in
+  code** — search for `OUTLIER_WINDOW`, `OUTLIER_Z_THRESHOLD`,
+  `IRR_VALID_MIN/MAX`, and `PASS_THROUGH_VALUE_BOUNDS` if you need to change them.
 - `STW programs/STW/` and `STW programs/Other/` are **reference copies of the
   Campbell datalogger programs** (`.CR6`, `.CSI`, `.tdf`, …). No pipeline code
   reads them; they're kept for context on how the raw data was produced.

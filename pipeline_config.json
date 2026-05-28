@@ -23,5 +23,7 @@
   "input_file_folder_prefix": "STW_",
   "yearly_file_name_template": "stw_{year}_cleaned.csv",
 
+  "pipeline_cutoff_date": "2024-08-31",
+
   "force_nan": []
 }
