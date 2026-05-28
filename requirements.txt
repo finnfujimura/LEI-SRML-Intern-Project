@@ -1,0 +1,14 @@
+# STW data pipeline dependencies.
+# Install with: python -m pip install -r requirements.txt
+
+# Core pipeline (steps 01-07)
+pandas>=2.2
+pyarrow>=14
+numpy>=1.26
+
+# Plotting / notebooks (export_yearly_metric_plots.py + plots/*.ipynb)
+matplotlib>=3.8
+bokeh>=3.4
+holoviews>=1.18
+hvplot>=0.10
+notebook>=7.0

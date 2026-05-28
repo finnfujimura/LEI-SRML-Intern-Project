@@ -13,15 +13,15 @@ dataset (`*_mV` and `*_Irr` columns) plus reports, outlier logs, and plots.
 ## 1. Quick start
 
 ```bash
-# Base pipeline (ingest -> clean -> map -> calibrate -> detect)
-python -m pip install pandas pyarrow numpy
-
-# Plotting / notebooks (only needed for the plotting steps below)
-python -m pip install matplotlib bokeh holoviews hvplot notebook
+# Install everything (core pipeline + plotting/notebooks)
+python -m pip install -r requirements.txt
 
 # Run the whole thing
 python run_stw_pipeline.py
 ```
+
+The core pipeline (steps 01–07) only needs `pandas`, `pyarrow`, and `numpy`;
+the rest of `requirements.txt` is for the plotting tools and notebooks.
 
 That's it for the core pipeline. Everything reads inputs from and writes
 outputs to the directories named in `pipeline_config.json` (see
